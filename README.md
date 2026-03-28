@@ -88,6 +88,14 @@ Aidora solves everyday problems by enabling users to:
 - Chat restricted until request acceptance
 - Role-based permissions enforced
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/e7d085b8-b57e-4dbf-9ccd-f6379339b2b1" width="600"/>
+</p>
+
+
+
+
+
 ---
 
 ## 🚀 Getting Started
