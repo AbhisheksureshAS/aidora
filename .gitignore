@@ -43,3 +43,13 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Firebase (VERY IMPORTANT)
+android/app/google-services.json
+ios/Runner/GoogleService-Info.plist
+
+# AI / temp docs
+*_SUMMARY.md
+*_FIXES.md
+*_REPORT.md
+MANUAL_TESTING_GUIDE.md
