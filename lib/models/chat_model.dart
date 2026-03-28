@@ -1,3 +1,19 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+DateTime _parseDateTime(dynamic value) {
+  if (value == null) return DateTime.fromMillisecondsSinceEpoch(0);
+  if (value is Timestamp) return value.toDate();
+  if (value is int) return DateTime.fromMillisecondsSinceEpoch(value);
+  return DateTime.now();
+}
+
+DateTime? _parseOptionalDateTime(dynamic value) {
+  if (value == null) return null;
+  if (value is Timestamp) return value.toDate();
+  if (value is int) return DateTime.fromMillisecondsSinceEpoch(value);
+  return null;
+}
+
 class ChatMessage {
   final String id;
   final String senderId;
@@ -35,7 +51,7 @@ class ChatMessage {
         (type) => type.name == data['type'],
         orElse: () => MessageType.text,
       ),
-      timestamp: DateTime.fromMillisecondsSinceEpoch(data['timestamp'] ?? 0),
+      timestamp: _parseDateTime(data['timestamp']),
       isRead: data['isRead'] ?? false,
       chatRoomId: data['chatRoomId'], // Chat room ID from Firebase
     );
@@ -98,6 +114,7 @@ class ChatRoom {
   final String? lastMessageSenderId;
   final int unreadCount;
   final DateTime createdAt;
+  final DateTime? completedAt; // Added for 7-day expiration
 
   ChatRoom({
     required this.id,
@@ -110,6 +127,7 @@ class ChatRoom {
     this.lastMessageSenderId,
     this.unreadCount = 0,
     required this.createdAt,
+    this.completedAt,
   });
 
   factory ChatRoom.fromFirebase(Map<String, dynamic> data, String id) {
@@ -119,11 +137,12 @@ class ChatRoom {
       participantNames: List<String>.from(data['participantNames'] ?? []),
       helpRequestId: data['helpRequestId'],
       helpRequestTitle: data['helpRequestTitle'],
-      lastMessageTime: DateTime.fromMillisecondsSinceEpoch(data['lastMessageTime'] ?? 0),
+      lastMessageTime: _parseDateTime(data['lastMessageTime']),
       lastMessage: data['lastMessage'],
       lastMessageSenderId: data['lastMessageSenderId'],
       unreadCount: data['unreadCount'] ?? 0,
-      createdAt: DateTime.fromMillisecondsSinceEpoch(data['createdAt'] ?? 0),
+      createdAt: _parseDateTime(data['createdAt']),
+      completedAt: _parseOptionalDateTime(data['completedAt']),
     );
   }
 
@@ -138,6 +157,7 @@ class ChatRoom {
       'lastMessageSenderId': lastMessageSenderId,
       'unreadCount': unreadCount,
       'createdAt': createdAt.millisecondsSinceEpoch,
+      if (completedAt != null) 'completedAt': completedAt!.millisecondsSinceEpoch,
     };
   }
 
@@ -152,6 +172,7 @@ class ChatRoom {
     String? lastMessageSenderId,
     int? unreadCount,
     DateTime? createdAt,
+    DateTime? completedAt,
   }) {
     return ChatRoom(
       id: id ?? this.id,
@@ -164,6 +185,7 @@ class ChatRoom {
       lastMessageSenderId: lastMessageSenderId ?? this.lastMessageSenderId,
       unreadCount: unreadCount ?? this.unreadCount,
       createdAt: createdAt ?? this.createdAt,
+      completedAt: completedAt ?? this.completedAt,
     );
   }
 

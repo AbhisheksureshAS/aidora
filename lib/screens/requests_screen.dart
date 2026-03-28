@@ -99,19 +99,47 @@ class _RequestsTabState extends State<RequestsTab> {
             final docs = snapshot.data?.docs ?? [];
             final requests = docs
                 .map((doc) => HelpRequestModel.fromFirebase(doc.data() as Map<String, dynamic>, doc.id))
-            .where((request) => _selectedCategory == null || request.category == _selectedCategory)
-            .where((request) => _selectedUrgency == null || request.urgency == _selectedUrgency)
-            .where((request) {
-              switch (_selectedScope) {
-                case RequestListScope.all:
-                  return true;
-                case RequestListScope.myRequests:
-                  return request.seekerId == user.uid;
-                case RequestListScope.acceptedByMe:
-                  return request.helperId == user.uid;
-              }
-            })
-            .toList();
+                .where((request) {
+                  final oneDayAgo = DateTime.now().subtract(const Duration(days: 1));
+                  
+                  // Global Look: Only tasks from the last 24 hours
+                  if (request.createdAt.isBefore(oneDayAgo)) return false;
+
+                  if (_showCompletedOnly) {
+                    // Filter: Completed
+                    if (request.status != RequestStatus.completed) return false;
+                    // Completed tasks: only show those you were part of
+                    return request.seekerId == user.uid || request.helperId == user.uid;
+                  } else {
+                    // Filter: Open (Pending or Accepted)
+                    if (request.status == RequestStatus.completed) return false;
+                    
+                    if (request.status == RequestStatus.accepted) {
+                      // Privacy: Accepted tasks ONLY for those involved
+                      return request.seekerId == user.uid || request.helperId == user.uid;
+                    }
+                    
+                    // Targeted Requests: If a seeker targeted a specific helper, hide it from the public
+                    if (request.helperId != null && request.helperId!.isNotEmpty) {
+                      return request.seekerId == user.uid || request.helperId == user.uid;
+                    }
+
+                    return true;
+                  }
+                })
+                .where((request) => _selectedCategory == null || request.category == _selectedCategory)
+                .where((request) => _selectedUrgency == null || request.urgency == _selectedUrgency)
+                .where((request) {
+                  switch (_selectedScope) {
+                    case RequestListScope.all:
+                      return true;
+                    case RequestListScope.myRequests:
+                      return request.seekerId == user.uid;
+                    case RequestListScope.acceptedByMe:
+                      return request.helperId == user.uid;
+                  }
+                })
+                .toList();
 
         return Scaffold(
           extendBodyBehindAppBar: true,
@@ -456,7 +484,7 @@ class _RequestsTabState extends State<RequestsTab> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '\$${request.offeredAmount!.toStringAsFixed(2)}',
+                  '₹${request.offeredAmount!.toStringAsFixed(2)}',
                   style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                     fontWeight: FontWeight.bold,
                     color: AppTheme.primaryPurple,
@@ -514,6 +542,23 @@ class _RequestsTabState extends State<RequestsTab> {
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.redAccent,
                       side: const BorderSide(color: Colors.redAccent),
+                    ),
+                  ),
+                ),
+              if (request.helperId == FirebaseAuth.instance.currentUser?.uid &&
+                  request.status == RequestStatus.accepted)
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                      _cancelHelp(request);
+                    },
+                    icon: const Icon(Icons.person_off_outlined),
+                    label: const Text('Cancel My Help'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.orangeAccent,
+                      side: const BorderSide(color: Colors.orangeAccent),
                     ),
                   ),
                 ),
@@ -583,7 +628,6 @@ class _RequestsTabState extends State<RequestsTab> {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
 
-      // Get helper information
       final helperDoc = await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
@@ -609,8 +653,32 @@ class _RequestsTabState extends State<RequestsTab> {
       final chatRoomRef = _firestore.collection('chat_rooms').doc(request.id);
       final firstMessageRef = _firestore.collection('chat_messages').doc();
 
+      // Calculate points
+      int basePoints = 5; // Low
+      if (request.urgency == RequestUrgency.high) basePoints = 20;
+      else if (request.urgency == RequestUrgency.medium) basePoints = 10;
+
+      final creationTime = request.createdAt;
+      final acceptTime = DateTime.fromMillisecondsSinceEpoch(nowMs);
+      final diffMinutes = acceptTime.difference(creationTime).inMinutes;
+
+      int speedBonus = 0;
+      String speedReason = "";
+      if (diffMinutes <= 10) {
+        speedBonus = 4; // Decreased 25% from 5
+        speedReason = " (Rapid Response Bonus!)";
+      } else if (diffMinutes <= 30) {
+        speedBonus = 2; // Decreased >25% from 3 (using 2 for clean integer)
+        speedReason = " (Fast Response Bonus)";
+      } else if (diffMinutes <= 60) {
+        speedBonus = 1; // Decreased 50% from 2 (minimum integer bonus)
+        speedReason = " (Early Bird Bonus)";
+      }
+
       await _firestore.runTransaction((tx) async {
         final reqSnap = await tx.get(requestRef);
+        final helperRef = _firestore.collection('users').doc(user.uid);
+
         if (!reqSnap.exists) {
           throw Exception('Request not found.');
         }
@@ -620,6 +688,16 @@ class _RequestsTabState extends State<RequestsTab> {
           throw Exception('This request is no longer available.');
         }
 
+        // Calculate base points based on urgency
+        int baseTaskPoints = 5; // Default Low
+        if (request.urgency == RequestUrgency.high) baseTaskPoints = 20;
+        else if (request.urgency == RequestUrgency.medium) baseTaskPoints = 10;
+
+        // Fetch helper snap for immediate points
+        final helperSnap = await tx.get(helperRef);
+        final currentPoints = (helperSnap.data() as Map<String, dynamic>)['helperPoints'] ?? 0;
+
+        // Update Request - Store speed bonus to be awarded ON COMPLETION
         tx.update(requestRef, {
           'status': RequestStatus.accepted.name,
           'helperId': user.uid,
@@ -627,6 +705,24 @@ class _RequestsTabState extends State<RequestsTab> {
           'helperEmail': user.email,
           'acceptedAt': nowMs,
           'updatedAt': nowMs,
+          'pendingSpeedBonus': speedBonus,
+          'speedBonusReason': speedReason,
+          'basePointsAwarded': baseTaskPoints, // Track that base points were given
+        });
+
+        // Award base points immediately
+        tx.update(helperRef, {
+          'helperPoints': currentPoints + baseTaskPoints,
+          'updatedAt': nowMs,
+        });
+
+        // Record Transaction for base points
+        final transRef = _firestore.collection('pointTransactions').doc();
+        tx.set(transRef, {
+          'uid': user.uid,
+          'points': baseTaskPoints,
+          'reason': "Task Accepted Reward (${request.urgency.displayName}): ${request.title}",
+          'timestamp': FieldValue.serverTimestamp(),
         });
 
         tx.set(chatRoomRef, {
@@ -675,7 +771,7 @@ class _RequestsTabState extends State<RequestsTab> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Request accepted! You can now chat with the seeker.'),
+            content: Text('Request accepted! Chat now with the seeker. \u{1F3C6}'),
             backgroundColor: Colors.green,
           ),
         );
@@ -705,72 +801,111 @@ class _RequestsTabState extends State<RequestsTab> {
     final systemMessageRef = _firestore.collection('chat_messages').doc();
     final nowMs = DateTime.now().millisecondsSinceEpoch;
 
-    await _firestore.runTransaction((tx) async {
-      final reqSnap = await tx.get(requestRef);
-      if (!reqSnap.exists) {
-        throw Exception('Request not found.');
-      }
-      final data = reqSnap.data() as Map<String, dynamic>;
-      final currentStatus = data['status'];
-      if (currentStatus == RequestStatus.completed.name) {
-        throw Exception('Task is already completed.');
-      }
-      if (currentStatus != RequestStatus.accepted.name) {
-        throw Exception('Only accepted tasks can be completed.');
-      }
-      if (data['seekerId'] != currentUser.uid) {
-        throw Exception('Only the seeker can complete this task.');
-      }
+    try {
+      await _firestore.runTransaction((tx) async {
+        final reqSnap = await tx.get(requestRef);
+        if (!reqSnap.exists) {
+          throw Exception('Request not found.');
+        }
+        final data = reqSnap.data() as Map<String, dynamic>;
+        
+        // Fetch all needed snapshots FIRST (READS)
+        DocumentSnapshot? helperSnap;
+        if (data['helperId'] != null) {
+          final helperRef = _firestore.collection('users').doc(data['helperId']);
+          helperSnap = await tx.get(helperRef);
+        }
 
-      tx.update(requestRef, {
-        'status': RequestStatus.completed.name,
-        'completedAt': nowMs,
-        'completedBy': currentUser.uid,
-        'updatedAt': nowMs,
-      });
+        // VALIDATION
+        final currentStatus = data['status'];
+        if (currentStatus == RequestStatus.completed.name) {
+          throw Exception('Task is already completed.');
+        }
+        if (currentStatus != RequestStatus.accepted.name) {
+          throw Exception('Only accepted tasks can be completed.');
+        }
 
-      if (data['helperId'] != null) {
-        final helperRef = _firestore.collection('users').doc(data['helperId']);
-        tx.set(helperRef, {
-          'completedTasks': FieldValue.increment(1),
+        // WRITES
+        tx.update(requestRef, {
+          'status': RequestStatus.completed.name,
+          'completedAt': nowMs,
+          'completedBy': currentUser.uid,
           'updatedAt': nowMs,
+        });
+
+        if (helperSnap != null && helperSnap.exists) {
+          final currentPoints = (helperSnap.data() as Map<String, dynamic>)['helperPoints'] ?? 0;
+          final helperRef = _firestore.collection('users').doc(data['helperId']);
+          
+          final int speedBonus = data['pendingSpeedBonus'] ?? 0;
+          final String speedReason = data['speedBonusReason'] ?? "";
+          
+          if (speedBonus > 0) {
+            tx.update(helperRef, {
+              'completedTasks': FieldValue.increment(1),
+              'helperPoints': currentPoints + speedBonus,
+              'updatedAt': nowMs,
+            });
+
+            // Record Transaction for the bonus
+            final transRef = _firestore.collection('pointTransactions').doc();
+            tx.set(transRef, {
+              'uid': data['helperId'],
+              'points': speedBonus,
+              'reason': "Speed Bonus Earned: ${data['title'] ?? 'Task'}$speedReason",
+              'timestamp': FieldValue.serverTimestamp(),
+            });
+          } else {
+            // Still increment completed tasks even if no bonus
+            tx.update(helperRef, {
+              'completedTasks': FieldValue.increment(1),
+              'updatedAt': nowMs,
+            });
+          }
+        }
+
+        tx.set(chatRoomRef, {
+          'lastMessageTime': nowMs,
+          'lastMessage': 'Task marked as completed',
+          'lastMessageSenderId': currentUser.uid,
+          'updatedAt': nowMs,
+          'completedAt': nowMs,
         }, SetOptions(merge: true));
-      }
 
-      tx.set(chatRoomRef, {
-        'lastMessageTime': nowMs,
-        'lastMessage': 'Task marked as completed',
-        'lastMessageSenderId': currentUser.uid,
-        'updatedAt': nowMs,
-      }, SetOptions(merge: true));
-
-      tx.set(systemMessageRef, {
-        'senderId': currentUser.uid,
-        'senderName': data['seekerName'] ?? 'Seeker',
-        'receiverId': data['helperId'] ?? '',
-        'receiverName': data['helperName'] ?? 'Helper',
-        'content': 'Task marked as completed',
-        'type': 'system',
-        'timestamp': nowMs,
-        'isRead': false,
-        'chatRoomId': request.id,
-        'helpRequestId': request.id,
-        'createdAt': nowMs,
+        tx.set(systemMessageRef, {
+          'senderId': currentUser.uid,
+          'senderName': data['seekerName'] ?? 'Seeker',
+          'receiverId': data['helperId'] ?? '',
+          'receiverName': data['helperName'] ?? 'Helper',
+          'content': 'Task marked as completed',
+          'type': 'system',
+          'timestamp': nowMs,
+          'isRead': false,
+          'chatRoomId': request.id,
+          'helpRequestId': request.id,
+          'createdAt': nowMs,
+        });
       });
-    });
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Request marked as completed.')),
-    );
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Request marked as completed.')),
+      );
 
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) =>
-            RatingScreen(helpRequest: request.copyWith(status: RequestStatus.completed)),
-      ),
-    );
+      final updatedRequest = request.copyWith(status: RequestStatus.completed);
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => RatingScreen(helpRequest: updatedRequest),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   Widget _buildRequestCard({
@@ -814,6 +949,27 @@ class _RequestsTabState extends State<RequestsTab> {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                if (request.helperId != null && request.helperId!.isNotEmpty && request.status == RequestStatus.pending && request.helperId == currentUserId)
+                  Container(
+                    margin: const EdgeInsets.only(right: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.amber.withOpacity(0.5)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.star, color: Colors.amber, size: 12),
+                        SizedBox(width: 4),
+                        Text(
+                          'Direct Match',
+                          style: TextStyle(color: Colors.amber, fontSize: 10, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
                 _buildStatusChip(request.status),
               ],
             ),
@@ -870,6 +1026,15 @@ class _RequestsTabState extends State<RequestsTab> {
                       backgroundColor: Colors.green,
                       foregroundColor: Colors.white,
                     ),
+                  ),
+                if (request.helperId == currentUserId && request.status == RequestStatus.accepted)
+                  OutlinedButton(
+                    onPressed: () => _cancelHelp(request),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.orangeAccent,
+                      side: const BorderSide(color: Colors.orangeAccent),
+                    ),
+                    child: const Text('Cancel Help'),
                   ),
                 if (_canReviewHelper(request, currentUserId))
                   ElevatedButton(
@@ -985,6 +1150,72 @@ class _RequestsTabState extends State<RequestsTab> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Unable to cancel task: $e')),
       );
+    }
+  }
+
+  Future<void> _cancelHelp(HelpRequestModel request) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    if (request.helperId != user.uid) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Only the assigned helper can cancel their help.')),
+      );
+      return;
+    }
+
+    final requestRef = _firestore.collection('help_requests').doc(request.id);
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+
+    try {
+      await _firestore.runTransaction((tx) async {
+        final reqSnap = await tx.get(requestRef);
+        if (!reqSnap.exists) {
+          throw Exception('Request not found.');
+        }
+        final data = reqSnap.data() as Map<String, dynamic>;
+        
+        if (data['status'] != RequestStatus.accepted.name) {
+          throw Exception('This task is no longer in accepted status.');
+        }
+        
+        if (data['helperId'] != user.uid) {
+          throw Exception('You are not the helper for this task anymore.');
+        }
+
+        // Reset to pending
+        tx.update(requestRef, {
+          'status': RequestStatus.pending.name,
+          'helperId': FieldValue.delete(),
+          'helperName': FieldValue.delete(),
+          'helperEmail': FieldValue.delete(),
+          'acceptedAt': FieldValue.delete(),
+          'updatedAt': nowMs,
+        });
+      });
+
+      await NotificationService.createNotification(
+        userId: request.seekerId,
+        title: 'Helper Withdrawn',
+        body: 'The helper for "${request.title}" has withdrawn. Your request is back in the list.',
+        type: NotificationType.system,
+        data: {'requestId': request.id},
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Help cancelled. The task is back in the public list.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error cancelling help: $e')),
+        );
+      }
     }
   }
 

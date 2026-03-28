@@ -147,12 +147,55 @@ class _RatingScreenState extends State<RatingScreen> {
           throw Exception('You cannot rate yourself.');
         }
 
+        // Fetch all needed snapshots FIRST (READS)
         final existing = await tx.get(ratingRef);
         if (existing.exists) {
           throw Exception('You have already rated this request.');
         }
 
+        DocumentSnapshot? helperSnap;
+        if (widget.helpRequest.helperId != null) {
+          helperSnap = await tx.get(helperRef);
+        }
+
+        // WRITES START HERE
         tx.set(ratingRef, rating.toFirebase());
+
+        // Point adjustment based on rating
+        int ratingPoints = 0;
+        String ratingReason = "";
+        
+        if (_overallRating <= 1.5) {
+          ratingPoints = -20;
+          ratingReason = "Penalty: Received a 1-star rating";
+        } else if (_overallRating <= 2.5) {
+          ratingPoints = -10;
+          ratingReason = "Penalty: Received a 2-star rating";
+        } else if (_overallRating <= 3.5) {
+          ratingPoints = 1; // Decreased reward
+          ratingReason = "Reward: Received a 3-star rating";
+        } else if (_overallRating <= 4.5) {
+          ratingPoints = 1; // Decreased reward
+          ratingReason = "Reward: Received a 4-star rating";
+        } else {
+          ratingPoints = 1; // Decreased reward
+          ratingReason = "Reward: Received a 5-star rating";
+        }
+
+        if (ratingPoints != 0 && helperSnap != null && helperSnap.exists) {
+          final currentPoints = (helperSnap.data() as Map<String, dynamic>)['helperPoints'] ?? 0;
+          tx.update(helperRef, {
+            'helperPoints': currentPoints + ratingPoints,
+          });
+
+          final transRef = _firestore.collection('pointTransactions').doc();
+          tx.set(transRef, {
+            'uid': widget.helpRequest.helperId,
+            'points': ratingPoints,
+            'reason': ratingReason,
+            'timestamp': FieldValue.serverTimestamp(),
+          });
+        }
       });
 
       // Update user reputation

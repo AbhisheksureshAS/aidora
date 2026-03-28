@@ -419,7 +419,7 @@ class _CreateRequestScreenState extends State<CreateRequestScreen> {
               decoration: const InputDecoration(
                 labelText: 'Offered Amount (Optional)',
                 hintText: 'Enter amount you\'re willing to pay',
-                prefixText: '\$ ',
+                prefixText: '₹ ',
               ),
               keyboardType: TextInputType.number,
             ),

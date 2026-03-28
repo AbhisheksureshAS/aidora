@@ -11,6 +11,8 @@ class UserModel {
   final double rating;
   final int totalRatings;
   final bool isHelperEnabled;
+  final int helperPoints;
+  final List<String> unlockedAvatars;
   final DateTime createdAt;
   final DateTime lastActive;
 
@@ -27,6 +29,8 @@ class UserModel {
     this.rating = 0.0,
     this.totalRatings = 0,
     this.isHelperEnabled = false,
+    this.helperPoints = 0,
+    this.unlockedAvatars = const [],
     required this.createdAt,
     required this.lastActive,
   });
@@ -45,6 +49,8 @@ class UserModel {
       rating: (data['rating'] ?? 0).toDouble(),
       totalRatings: data['totalRatings'] ?? 0,
       isHelperEnabled: data['isHelperEnabled'] ?? false,
+      helperPoints: data['helperPoints'] ?? 0,
+      unlockedAvatars: List<String>.from(data['unlockedAvatars'] ?? []),
       createdAt: DateTime.fromMillisecondsSinceEpoch(data['createdAt'] ?? 0),
       lastActive: DateTime.fromMillisecondsSinceEpoch(data['lastActive'] ?? 0),
     );
@@ -63,6 +69,8 @@ class UserModel {
       'rating': rating,
       'totalRatings': totalRatings,
       'isHelperEnabled': isHelperEnabled,
+      'helperPoints': helperPoints,
+      'unlockedAvatars': unlockedAvatars,
       'createdAt': createdAt.millisecondsSinceEpoch,
       'lastActive': lastActive.millisecondsSinceEpoch,
     };
@@ -81,6 +89,8 @@ class UserModel {
     double? rating,
     int? totalRatings,
     bool? isHelperEnabled,
+    int? helperPoints,
+    List<String>? unlockedAvatars,
     DateTime? createdAt,
     DateTime? lastActive,
   }) {
@@ -97,6 +107,8 @@ class UserModel {
       rating: rating ?? this.rating,
       totalRatings: totalRatings ?? this.totalRatings,
       isHelperEnabled: isHelperEnabled ?? this.isHelperEnabled,
+      helperPoints: helperPoints ?? this.helperPoints,
+      unlockedAvatars: unlockedAvatars ?? this.unlockedAvatars,
       createdAt: createdAt ?? this.createdAt,
       lastActive: lastActive ?? this.lastActive,
     );

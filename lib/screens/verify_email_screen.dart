@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'home_screen.dart';
 import '../theme/app_theme.dart';
 
 class VerifyEmailScreen extends StatefulWidget {
@@ -164,7 +165,19 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
       await widget.user.reload();
       final updatedUser = FirebaseAuth.instance.currentUser;
       if (updatedUser != null && updatedUser.emailVerified) {
-        // StreamBuilder in main.dart will automatically switch to HomeScreen
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Email verified successfully! Welcome to Aidora.'),
+              backgroundColor: AppTheme.successColor,
+            ),
+          );
+          // Force navigation to Home
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => HomeScreen()),
+            (route) => false,
+          );
+        }
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(

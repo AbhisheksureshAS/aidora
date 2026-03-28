@@ -441,6 +441,31 @@ class _SignUpScreenState extends State<SignUpScreen> {
       return;
     }
 
+    // Email Domain Validation
+    final email = _emailController.text.trim().toLowerCase();
+    final allowedDomains = [
+      'gmail.com',
+      'yahoo.com',
+      'outlook.com',
+      'hotmail.com',
+      'protonmail.com',
+      'zoho.com',
+      'zohomail.com'
+    ];
+    
+    bool isAllowed = false;
+    for (var domain in allowedDomains) {
+      if (email.endsWith('@$domain')) {
+        isAllowed = true;
+        break;
+      }
+    }
+
+    if (!isAllowed) {
+      _showError('Only official email providers (Google, Yahoo, Microsoft, Proton, Zoho) are accepted.');
+      return;
+    }
+
     setState(() {
       _isLoading = true;
     });

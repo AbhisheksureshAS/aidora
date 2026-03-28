@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/chat_model.dart';
 import '../theme/app_theme.dart';
+import 'public_profile_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -143,6 +144,11 @@ class _ChatScreenState extends State<ChatScreen> {
 
         final chatRooms = snapshot.data!.docs
             .map((doc) => ChatRoom.fromFirebase(doc.data() as Map<String, dynamic>, doc.id))
+            .where((room) {
+              if (room.completedAt == null) return true;
+              final expirationDate = room.completedAt!.add(const Duration(days: 7));
+              return DateTime.now().isBefore(expirationDate);
+            })
             .toList();
             
         // Sort locally to bypass Firestore index requirement
@@ -201,6 +207,26 @@ class _ChatScreenState extends State<ChatScreen> {
     return Column(
       children: [
         _buildChatHeader(user),
+        
+        if (_selectedChatRoom?.completedAt != null)
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+            width: double.infinity,
+            color: Colors.amber.withOpacity(0.15),
+            child: Row(
+              children: [
+                const Icon(Icons.timer_outlined, color: Colors.amber, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Task completed. Chat will be deleted after 7 days.',
+                    style: const TextStyle(color: Colors.amber, fontSize: 13, fontWeight: FontWeight.w500),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
           // Messages List
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
@@ -314,68 +340,114 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
 
           // Message Input
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.secondaryBlack,
-              border: Border(
-                top: BorderSide(color: AppTheme.primaryPurple.withValues(alpha: 0.2)),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: AppTheme.primaryBlack.withValues(alpha: 0.5),
-                  blurRadius: 8,
-                  offset: const Offset(0, -2),
-                ),
-              ],
-            ),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.attach_file, color: AppTheme.primaryPurple),
-                  onPressed: () {}, // TODO: Implement file attachment
-                ),
-                Expanded(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: AppTheme.primaryBlack,
-                      borderRadius: BorderRadius.circular(24),
-                      border: Border.all(
-                        color: AppTheme.primaryPurple.withValues(alpha: 0.3),
-                      ),
-                    ),
-                    child: TextField(
-                      controller: _messageController,
-                      style: const TextStyle(color: AppTheme.textPrimary),
-                      decoration: InputDecoration(
-                        hintText: 'Type a message...',
-                        hintStyle: TextStyle(color: AppTheme.textSecondary.withValues(alpha: 0.6)),
-                        border: InputBorder.none,
-                        enabledBorder: InputBorder.none,
-                        focusedBorder: InputBorder.none,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        fillColor: Colors.transparent,
-                        filled: true,
-                      ),
-                      maxLines: null,
-                      textCapitalization: TextCapitalization.sentences,
-                      onSubmitted: (_) => _sendMessage(),
+          StreamBuilder<DocumentSnapshot>(
+            stream: _selectedChatRoom!.helpRequestId != null 
+                ? _firestore.collection('help_requests').doc(_selectedChatRoom!.helpRequestId).snapshots()
+                : const Stream.empty(),
+            builder: (context, snapshot) {
+              bool isCompleted = false;
+              if (snapshot.hasData && snapshot.data!.exists) {
+                final data = snapshot.data!.data() as Map<String, dynamic>;
+                isCompleted = data['status'] == 'completed';
+              }
+
+              if (isCompleted) {
+                return Container(
+                  padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: AppTheme.secondaryBlack,
+                    border: Border(
+                      top: BorderSide(color: AppTheme.primaryPurple.withValues(alpha: 0.2)),
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Container(
-                  decoration: const BoxDecoration(
-                    color: AppTheme.primaryPurple,
-                    shape: BoxShape.circle,
+                  child: SafeArea(
+                    top: false,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.lock_outline, color: AppTheme.textSecondary.withValues(alpha: 0.6), size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Task is completed. Chat is closed.',
+                          style: TextStyle(
+                            color: AppTheme.textSecondary.withValues(alpha: 0.6),
+                            fontWeight: FontWeight.w600,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  child: IconButton(
-                    icon: const Icon(Icons.send, color: Colors.white),
-                    onPressed: _sendMessage,
+                );
+              }
+
+              return Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppTheme.secondaryBlack,
+                  border: Border(
+                    top: BorderSide(color: AppTheme.primaryPurple.withValues(alpha: 0.2)),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppTheme.primaryBlack.withValues(alpha: 0.5),
+                      blurRadius: 8,
+                      offset: const Offset(0, -2),
+                    ),
+                  ],
+                ),
+                child: SafeArea(
+                  top: false,
+                  child: Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.attach_file, color: AppTheme.primaryPurple),
+                        onPressed: () {}, // TODO: Implement file attachment
+                      ),
+                      Expanded(
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: AppTheme.primaryBlack,
+                            borderRadius: BorderRadius.circular(24),
+                            border: Border.all(
+                              color: AppTheme.primaryPurple.withValues(alpha: 0.3),
+                            ),
+                          ),
+                          child: TextField(
+                            controller: _messageController,
+                            style: const TextStyle(color: AppTheme.textPrimary),
+                            decoration: InputDecoration(
+                              hintText: 'Type a message...',
+                              hintStyle: TextStyle(color: AppTheme.textSecondary.withValues(alpha: 0.6)),
+                              border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              fillColor: Colors.transparent,
+                              filled: true,
+                            ),
+                            maxLines: null,
+                            textCapitalization: TextCapitalization.sentences,
+                            onSubmitted: (_) => _sendMessage(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        decoration: const BoxDecoration(
+                          color: AppTheme.primaryPurple,
+                          shape: BoxShape.circle,
+                        ),
+                        child: IconButton(
+                          icon: const Icon(Icons.send, color: Colors.white),
+                          onPressed: _sendMessage,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-              ],
-            ),
+              );
+            },
           ),
         ],
       );
@@ -387,84 +459,98 @@ class _ChatScreenState extends State<ChatScreen> {
 
     if (otherParticipantId.isEmpty) return const SizedBox.shrink();
 
-    return FutureBuilder<List<dynamic>>(
-      future: Future.wait([
-        _firestore.collection('users').doc(otherParticipantId).get(),
-        _firestore.collection('help_requests')
-            .where('helperId', isEqualTo: otherParticipantId)
-            .get(),
-        _firestore.collection('ratings')
-            .where('toUserId', isEqualTo: otherParticipantId)
-            .get(),
-      ]),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData || snapshot.hasError) {
+    return StreamBuilder<DocumentSnapshot>(
+      stream: _firestore.collection('users').doc(otherParticipantId).snapshots(),
+      builder: (context, userSnapshot) {
+        if (!userSnapshot.hasData || !userSnapshot.data!.exists) {
           return const SizedBox.shrink();
         }
 
-        final userDoc = snapshot.data![0] as DocumentSnapshot;
-        if (!userDoc.exists) {
-          return const SizedBox.shrink();
-        }
-
-        final userData = userDoc.data() as Map<String, dynamic>;
-        final requestsSnap = snapshot.data![1] as QuerySnapshot;
-        final ratingsSnap = snapshot.data![2] as QuerySnapshot;
-        
+        final userData = userSnapshot.data!.data() as Map<String, dynamic>;
+        final profileImageUrl = userData['profileImageUrl'] as String?;
         final rating = (userData['rating'] ?? 0.0).toDouble();
-        final actualReviewCount = ratingsSnap.docs.length;
+        final name = userData['name'] ?? 'User';
         
-        // Strictly count tasks where this user was the Helper and status is completed or Completed
-        final rawDocs = requestsSnap.docs.map((d) => d.data() as Map<String, dynamic>);
-        final completedTasks = rawDocs.where((d) => 
-            (d['helperId'] == otherParticipantId) && 
-            (d['status']?.toString().toLowerCase() == 'completed')
-        ).length;
-
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-            color: AppTheme.secondaryBlack,
-            border: Border(
-              bottom: BorderSide(color: AppTheme.primaryPurple.withValues(alpha: 0.2)),
+        return GestureDetector(
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => PublicProfileScreen(userId: otherParticipantId)),
+            );
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            decoration: BoxDecoration(
+              color: AppTheme.secondaryBlack,
+              border: Border(
+                bottom: BorderSide(color: AppTheme.primaryPurple.withValues(alpha: 0.2)),
+              ),
             ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.star, color: Colors.amber, size: 16),
-                  const SizedBox(width: 4),
-                  Text(
-                    '${rating.toStringAsFixed(1)} ($actualReviewCount)',
-                    style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontWeight: FontWeight.w600),
+            child: Column(
+              children: [
+                Hero(
+                  tag: 'avatar_$otherParticipantId',
+                  child: CircleAvatar(
+                    radius: 36,
+                    backgroundColor: AppTheme.primaryPurple.withValues(alpha: 0.1),
+                    backgroundImage: (profileImageUrl != null && profileImageUrl.isNotEmpty)
+                        ? (profileImageUrl.startsWith('assets/') 
+                            ? AssetImage(profileImageUrl) as ImageProvider
+                            : NetworkImage(profileImageUrl))
+                        : null,
+                    child: (profileImageUrl == null || profileImageUrl.isEmpty)
+                        ? const Icon(Icons.person, color: Colors.white24, size: 36)
+                        : null,
                   ),
-                ],
-              ),
-              Container(width: 1, height: 20, color: AppTheme.primaryPurple.withValues(alpha: 0.3)),
-              Row(
-                children: [
-                  const Icon(Icons.task_alt, color: AppTheme.successColor, size: 16),
-                  const SizedBox(width: 4),
-                  Text(
-                    '$completedTasks tasks',
-                    style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontWeight: FontWeight.w600),
-                  ),
-                ],
-              ),
-              Container(width: 1, height: 20, color: AppTheme.primaryPurple.withValues(alpha: 0.3)),
-              InkWell(
-                onTap: _showChatInfo,
-                child: const Text(
-                  'Insights >',
-                  style: TextStyle(color: AppTheme.accentPurple, fontSize: 13, fontWeight: FontWeight.w600),
                 ),
-              ),
-            ],
+                const SizedBox(height: 8),
+                Text(
+                  name,
+                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _headerBadge(Icons.star, Colors.amber, '${rating.toStringAsFixed(1)}'),
+                    const SizedBox(width: 16),
+                    _headerBadge(Icons.verified_user, AppTheme.accentPurple, 'Trusted'),
+                    const SizedBox(width: 16),
+                    InkWell(
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => PublicProfileScreen(userId: otherParticipantId)),
+                        );
+                      },
+                      child: Text(
+                        'Full Profile >',
+                        style: TextStyle(color: AppTheme.accentPurple.withValues(alpha: 0.8), fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         );
       },
+    );
+  }
+
+  Widget _headerBadge(IconData icon, Color color, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 14),
+          const SizedBox(width: 4),
+          Text(label, style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold)),
+        ],
+      ),
     );
   }
 
@@ -755,155 +841,175 @@ class ChatRoomCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        decoration: BoxDecoration(
-          color: AppTheme.secondaryBlack,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: chatRoom.unreadCount > 0 
-                ? AppTheme.accentPurple 
-                : Colors.white.withValues(alpha: 0.1),
-            width: chatRoom.unreadCount > 0 ? 2 : 1,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.2),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            // Avatar with online indicator
-            Stack(
-              children: [
-                CircleAvatar(
-                  backgroundColor: AppTheme.secondaryBlack,
-                  radius: 28,
-                  child: Text(
-                    chatRoom.otherParticipantName.isNotEmpty 
-                        ? chatRoom.otherParticipantName[0].toUpperCase()
-                        : '?',
-                    style: const TextStyle(
-                      color: AppTheme.accentPurple,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                ),
-                if (chatRoom.unreadCount > 0)
-                  Positioned(
-                    right: 0,
-                    bottom: 0,
-                    child: Container(
-                      width: 12,
-                      height: 12,
-                      decoration: BoxDecoration(
-                        color: AppTheme.primaryPurple,
-                        border: Border.all(color: AppTheme.cardColor, width: 2),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-            const SizedBox(width: 12),
+    final otherParticipantId = chatRoom.participants.firstWhere((id) => id != currentUserId, orElse: () => '');
+    
+    return StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseFirestore.instance.collection('users').doc(otherParticipantId).snapshots(),
+      builder: (context, userSnapshot) {
+        String? profileImageUrl;
+        if (userSnapshot.hasData && userSnapshot.data!.exists) {
+          final data = userSnapshot.data!.data() as Map<String, dynamic>;
+          profileImageUrl = data['profileImageUrl'];
+        }
 
-            // Chat Info
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          chatRoom.displayTitle,
-                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            fontWeight: chatRoom.unreadCount > 0 ? FontWeight.bold : FontWeight.w600,
-                            color: chatRoom.unreadCount > 0 ? AppTheme.primaryPurple : null,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+        return StreamBuilder<QuerySnapshot>(
+          stream: FirebaseFirestore.instance
+              .collection('chat_messages')
+              .where('chatRoomId', isEqualTo: chatRoom.id)
+              .where('receiverId', isEqualTo: currentUserId)
+              .where('isRead', isEqualTo: false)
+              .snapshots(),
+          builder: (context, snapshot) {
+            final unreadCount = snapshot.hasData ? snapshot.data!.docs.length : 0;
+
+            return InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: AppTheme.secondaryBlack,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: unreadCount > 0 
+                        ? AppTheme.accentPurple 
+                        : Colors.white.withValues(alpha: 0.1),
+                    width: unreadCount > 0 ? 2 : 1,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.2),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Stack(
+                      children: [
+                        CircleAvatar(
+                          backgroundColor: AppTheme.primaryBlack,
+                          radius: 28,
+                          backgroundImage: (profileImageUrl != null && profileImageUrl.isNotEmpty)
+                              ? (profileImageUrl.startsWith('assets/') 
+                                  ? AssetImage(profileImageUrl) as ImageProvider
+                                  : NetworkImage(profileImageUrl))
+                              : null,
+                          child: (profileImageUrl == null || profileImageUrl.isEmpty)
+                              ? Icon(Icons.person, color: Colors.white.withValues(alpha: 0.2), size: 28)
+                              : null,
                         ),
-                      ),
-                      if (chatRoom.unreadCount > 0)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: AppTheme.primaryPurple,
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: [
-                              BoxShadow(
-                                color: AppTheme.primaryPurple.withValues(alpha: 0.3),
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
+                        if (unreadCount > 0)
+                          Positioned(
+                            right: 0,
+                            bottom: 0,
+                            child: Container(
+                              width: 12,
+                              height: 12,
+                              decoration: BoxDecoration(
+                                color: AppTheme.primaryPurple,
+                                border: Border.all(color: AppTheme.cardColor, width: 2),
+                                borderRadius: BorderRadius.circular(6),
                               ),
-                            ],
-                          ),
-                          child: Text(
-                            chatRoom.unreadCount > 99 ? '99+' : chatRoom.unreadCount.toString(),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
                             ),
                           ),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  if (chatRoom.lastMessage != null)
-                    Text(
-                      chatRoom.lastMessage!,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: chatRoom.unreadCount > 0 ? AppTheme.accentWhite : AppTheme.textSecondary,
-                        fontWeight: chatRoom.unreadCount > 0 ? FontWeight.w500 : null,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    )
-                  else
-                    Text(
-                      'No messages yet',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: AppTheme.textSecondary.withValues(alpha: 0.7),
-                        fontStyle: FontStyle.italic,
+                      ],
+                    ),
+                    const SizedBox(width: 12),
+        
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  chatRoom.displayTitle,
+                                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                    fontWeight: unreadCount > 0 ? FontWeight.bold : FontWeight.w600,
+                                    color: AppTheme.textPrimary,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              if (unreadCount > 0)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.redAccent,
+                                    borderRadius: BorderRadius.circular(12),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.redAccent.withValues(alpha: 0.3),
+                                        blurRadius: 4,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Text(
+                                    unreadCount > 99 ? '99+' : unreadCount.toString(),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          if (chatRoom.lastMessage != null)
+                            Text(
+                              chatRoom.lastMessage!,
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: unreadCount > 0 ? AppTheme.accentWhite : AppTheme.textSecondary,
+                                fontWeight: unreadCount > 0 ? FontWeight.w500 : null,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            )
+                          else
+                            Text(
+                              'No messages yet',
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: AppTheme.textSecondary.withValues(alpha: 0.7),
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                        ],
                       ),
                     ),
-                ],
-              ),
-            ),
 
-            // Time and Status
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  _formatTime(chatRoom.lastMessageTime),
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: chatRoom.unreadCount > 0 ? AppTheme.primaryPurple : AppTheme.textSecondary,
-                    fontWeight: chatRoom.unreadCount > 0 ? FontWeight.w600 : null,
-                  ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          _formatTime(chatRoom.lastMessageTime),
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: unreadCount > 0 ? AppTheme.primaryPurple : AppTheme.textSecondary,
+                            fontWeight: unreadCount > 0 ? FontWeight.w600 : null,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        if (unreadCount > 0)
+                          const Icon(
+                            Icons.mark_as_unread,
+                            size: 16,
+                            color: AppTheme.primaryPurple,
+                          ),
+                      ],
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 4),
-                if (chatRoom.unreadCount > 0)
-                  const Icon(
-                    Icons.mark_as_unread,
-                    size: 16,
-                    color: AppTheme.primaryPurple,
-                  ),
-              ],
-            ),
-          ],
-        ),
-      ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -945,22 +1051,38 @@ class MessageBubble extends StatelessWidget {
         children: [
           if (!isMe) ...[
             // Sender avatar
-            Container(
-              margin: const EdgeInsets.only(right: 8),
-              child: CircleAvatar(
-                radius: 16,
-                backgroundColor: AppTheme.secondaryBlack,
-                child: Text(
-                  message.senderName.isNotEmpty 
-                      ? message.senderName[0].toUpperCase()
-                      : '?',
-                  style: const TextStyle(
-                    color: AppTheme.accentPurple,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
+            StreamBuilder<DocumentSnapshot>(
+              stream: FirebaseFirestore.instance.collection('users').doc(message.senderId).snapshots(),
+              builder: (context, snapshot) {
+                String? profileImageUrl;
+                if (snapshot.hasData && snapshot.data!.exists) {
+                  final data = snapshot.data!.data() as Map<String, dynamic>;
+                  profileImageUrl = data['profileImageUrl'];
+                }
+
+                return GestureDetector(
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => PublicProfileScreen(userId: message.senderId)),
+                    );
+                  },
+                  child: Container(
+                    margin: const EdgeInsets.only(right: 8),
+                    child: CircleAvatar(
+                      radius: 16,
+                      backgroundColor: AppTheme.secondaryBlack,
+                      backgroundImage: (profileImageUrl != null && profileImageUrl.isNotEmpty)
+                          ? (profileImageUrl.startsWith('assets/') 
+                              ? AssetImage(profileImageUrl) as ImageProvider
+                              : NetworkImage(profileImageUrl))
+                          : null,
+                      child: (profileImageUrl == null || profileImageUrl.isEmpty)
+                          ? const Icon(Icons.person, color: Colors.white24, size: 16)
+                          : null,
+                    ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ],
           

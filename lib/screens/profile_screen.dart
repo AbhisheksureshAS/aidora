@@ -6,7 +6,9 @@ import 'package:geocoding/geocoding.dart';
 import 'package:image_picker/image_picker.dart';
 import '../models/user_model.dart';
 import '../models/rating_model.dart';
+import '../models/point_transaction_model.dart';
 import '../theme/app_theme.dart';
+import 'transaction_history_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -197,26 +199,393 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _pickImage() async {
-    try {
-      final XFile? image = await _imagePicker.pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 512,
-        maxHeight: 512,
-        imageQuality: 70,
-      );
-      
-      if (image != null) {
-        // TODO: Upload to Firebase Storage
-        setState(() {
-          _profileImageUrl = image.path;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error picking image: $e')),
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.secondaryBlack,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.white24,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 20),
+          ListTile(
+            leading: const Icon(Icons.photo_library, color: Colors.white),
+            title: const Text('Gallery', style: TextStyle(color: Colors.white)),
+            onTap: () async {
+              Navigator.pop(context);
+              try {
+                final XFile? image = await _imagePicker.pickImage(
+                  source: ImageSource.gallery,
+                  maxWidth: 512,
+                  maxHeight: 512,
+                  imageQuality: 70,
+                );
+                if (image != null) {
+                  setState(() => _profileImageUrl = image.path);
+                }
+              } catch (e) {
+                _showError('Error picking image: $e');
+              }
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.auto_awesome, color: AppTheme.accentPurple),
+            title: const Text('Choose AI Avatar (One Piece)', style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context);
+              _showAvatarPicker();
+            },
+          ),
+          const SizedBox(height: 20),
+        ],
+      ),
+    );
+  }
+
+  void _showAvatarPicker() {
+    final Map<String, List<Map<String, dynamic>>> categorizedAvatars = {
+      'The Straw Hat Crew 🏴‍☠️': [
+        {'name': 'Luffy', 'path': 'assets/avatars/avatar_luffy.png', 'threshold': 0},
+        {'name': 'Zoro', 'path': 'assets/avatars/avatar_zoro.png', 'threshold': 0},
+        {'name': 'Nami', 'path': 'assets/avatars/avatar_nami.png', 'threshold': 0},
+        {'name': 'Usopp', 'path': 'assets/avatars/avatar_usopp.png', 'threshold': 0},
+        {'name': 'Sanji', 'path': 'assets/avatars/avatar_sanji.png', 'threshold': 0},
+        {'name': 'Chopper', 'path': 'assets/avatars/avatar_chopper.png', 'threshold': 0},
+        {'name': 'Robin', 'path': 'assets/avatars/avatar_robin.png', 'threshold': 0},
+        {'name': 'Franky', 'path': 'assets/avatars/avatar_franky.png', 'threshold': 0},
+        {'name': 'Brook', 'path': 'assets/avatars/avatar_brook.png', 'threshold': 0},
+        {'name': 'Jinbe', 'path': 'assets/avatars/avatar_jinbe.png', 'threshold': 0},
+        {'name': 'Law', 'path': 'assets/avatars/avatar_law.png', 'threshold': 0},
+      ],
+      'Elite & Rare Avatars 💎': [
+        {'name': 'Aidora Pro', 'path': 'assets/avatars/premium_logo.png', 'threshold': 100},
+        {'name': 'Helping Hands', 'path': 'assets/avatars/premium_helping_hands.png', 'threshold': 250},
+        {'name': 'Tech Star', 'path': 'assets/avatars/premium_tech.png', 'threshold': 500},
+        {'name': 'Hero Star', 'path': 'assets/avatars/premium_star.png', 'threshold': 750},
+        {'name': 'Elite Gem', 'path': 'assets/avatars/premium_gem.png', 'threshold': 1000},
+      ],
+    };
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.primaryBlack,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        final user = FirebaseAuth.instance.currentUser;
+        if (user == null) return const SizedBox.shrink();
+        
+        return StreamBuilder<DocumentSnapshot>(
+          stream: _firestore.collection('users').doc(user.uid).snapshots(),
+          builder: (context, userSnapshot) {
+            UserModel? currentUser = _currentUser;
+            if (userSnapshot.hasData && userSnapshot.data!.exists) {
+              currentUser = UserModel.fromFirebase(userSnapshot.data!.data() as Map<String, dynamic>, user.uid);
+            }
+
+            return DraggableScrollableSheet(
+              initialChildSize: 0.7,
+              maxChildSize: 0.9,
+              minChildSize: 0.5,
+              expand: false,
+              builder: (context, scrollController) => Column(
+          children: [
+            const SizedBox(height: 12),
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 24),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Choose Avatar',
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: AppTheme.primaryPurple.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: AppTheme.primaryPurple.withValues(alpha: 0.3)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.flash_on, color: Colors.amber, size: 16),
+                        const SizedBox(width: 4),
+                        Text(
+                          '${currentUser?.helperPoints ?? 0} PTS',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                controller: scrollController,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                children: categorizedAvatars.entries.map((category) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+                        child: Text(
+                          category.key,
+                          style: const TextStyle(
+                            color: AppTheme.accentPurple,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 1.5,
+                          ),
+                        ),
+                      ),
+                      GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 3,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 16,
+                          childAspectRatio: 0.7,
+                        ),
+                        itemCount: category.value.length,
+                        itemBuilder: (context, index) {
+                          final avatar = category.value[index];
+                          final path = (avatar['path'] as String).trim();
+                          final int threshold = avatar['threshold'] as int;
+                          final int userPoints = (currentUser?.helperPoints ?? 0).toInt();
+                          final bool isUnlocked = userPoints >= threshold;
+                          final isSelected = _profileImageUrl == path;
+                          
+                          return GestureDetector(
+                            onTap: () {
+                              if (isUnlocked) {
+                                setState(() => _profileImageUrl = path);
+                                Navigator.pop(context);
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Reach $threshold PTS to unlock this! (Current: $userPoints)'),
+                                    backgroundColor: AppTheme.accentPurple,
+                                  ),
+                                );
+                              }
+                            },
+                            child: Column(
+                              children: [
+                                Stack(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.all(3),
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        border: Border.all(
+                                          color: isSelected ? AppTheme.accentPurple : (isUnlocked ? Colors.white10 : Colors.transparent),
+                                          width: isSelected ? 3 : 1,
+                                        ),
+                                        boxShadow: isSelected ? [
+                                          BoxShadow(color: AppTheme.accentPurple.withValues(alpha: 0.4), blurRadius: 10)
+                                        ] : null,
+                                      ),
+                                      child: Opacity(
+                                        opacity: isUnlocked ? 1.0 : 0.4,
+                                        child: CircleAvatar(
+                                          radius: 38,
+                                          backgroundColor: AppTheme.secondaryBlack,
+                                          backgroundImage: AssetImage(path),
+                                        ),
+                                      ),
+                                    ),
+                                    if (!isUnlocked)
+                                      Positioned.fill(
+                                        child: Center(
+                                          child: Container(
+                                            padding: const EdgeInsets.all(8),
+                                            decoration: BoxDecoration(
+                                              color: Colors.black54,
+                                              shape: BoxShape.circle,
+                                            ),
+                                            child: const Icon(Icons.lock, color: Colors.white, size: 24),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  avatar['name']!,
+                                  style: TextStyle(
+                                    color: isSelected ? AppTheme.accentPurple : Colors.white60,
+                                    fontSize: 12,
+                                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                if (!isUnlocked)
+                                  Text(
+                                    'Unlock at $threshold PTS',
+                                    style: const TextStyle(color: Colors.amber, fontSize: 10, fontWeight: FontWeight.bold),
+                                  ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+              ),
+            );
+          },
         );
-      }
+      },
+    );
+  }
+
+  void _showUnlockDialog(Map<String, dynamic> avatar) {
+    final int price = avatar['price'];
+    final String path = avatar['path'];
+    final String name = avatar['name'];
+    final bool canAfford = (_currentUser?.helperPoints ?? 0) >= price;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppTheme.secondaryBlack,
+        title: Text('Unlock $name', style: const TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircleAvatar(
+              radius: 40,
+              backgroundImage: AssetImage(path),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'This premium avatar costs $price points.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Your Balance: ${_currentUser?.helperPoints ?? 0} PTS',
+              style: TextStyle(
+                color: canAfford ? Colors.green : Colors.red,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: canAfford ? () {
+              Navigator.pop(context); // Close dialog
+              Navigator.pop(context); // Close picker BottomSheet to show result
+              _unlockAvatar(path, price);
+            } : null,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: canAfford ? AppTheme.primaryPurple : Colors.grey,
+            ),
+            child: const Text('Unlock'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _unlockAvatar(String path, int price) async {
+    if (_currentUser == null) return;
+    
+    try {
+      setState(() => _isLoading = true);
+      
+      final userRef = _firestore.collection('users').doc(_currentUser!.uid);
+      
+      await _firestore.runTransaction((tx) async {
+        final userSnap = await tx.get(userRef);
+        if (!userSnap.exists) throw Exception('User not found');
+        
+        final userData = userSnap.data() as Map<String, dynamic>;
+        final int currentPoints = (userData['helperPoints'] ?? 0).toInt();
+        final List<String> unlocked = List<String>.from(userData['unlockedAvatars'] ?? []);
+        final int deduction = price;
+        
+        if (currentPoints < deduction) throw Exception('Insufficient points. You need $deduction and have $currentPoints.');
+        if (unlocked.any((p) => p.trim() == path.trim())) return; // Already unlocked
+
+        unlocked.add(path.trim());
+        
+        tx.update(userRef, {
+          'helperPoints': currentPoints - deduction,
+          'unlockedAvatars': unlocked,
+          'updatedAt': DateTime.now().millisecondsSinceEpoch,
+        });
+
+        // Record Transaction
+        final transRef = _firestore.collection('pointTransactions').doc();
+        tx.set(transRef, {
+          'uid': _currentUser!.uid,
+          'points': -deduction,
+          'reason': 'Unlocked Avatar: ${path.split('/').last.split('.').first}',
+          'timestamp': FieldValue.serverTimestamp(),
+        });
+      });
+
+      _showSuccess('Avatar unlocked successfully!');
+      setState(() {
+        _profileImageUrl = path;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() => _isLoading = false);
+      _showError('Failed to unlock avatar: $e');
+    }
+  }
+
+  void _showSuccess(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), backgroundColor: Colors.green),
+      );
+    }
+  }
+
+  void _showTransactionHistory() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const TransactionHistoryScreen()),
+    );
+  }
+
+  void _showError(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), backgroundColor: Colors.red),
+      );
     }
   }
 
@@ -391,31 +760,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             padding: const EdgeInsets.all(4),
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
-                              gradient: LinearGradient(
-                                colors: [AppTheme.accentPurple, AppTheme.primaryPurple],
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: AppTheme.accentPurple.withValues(alpha: 0.3),
-                                  blurRadius: 15,
-                                  spreadRadius: 2,
-                                ),
-                              ],
+                              border: Border.all(color: AppTheme.primaryPurple.withValues(alpha: 0.5), width: 3),
                             ),
                             child: CircleAvatar(
                               radius: 65,
                               backgroundColor: AppTheme.secondaryBlack,
-                              backgroundImage: _profileImageUrl != null
+                              backgroundImage: (_profileImageUrl != null && _profileImageUrl!.isNotEmpty)
                                   ? (_profileImageUrl!.startsWith('http') 
                                       ? NetworkImage(_profileImageUrl!) 
-                                      : null) // Local file path logic if needed
+                                      : AssetImage(_profileImageUrl!))
                                   : null,
-                              child: _profileImageUrl == null
-                                  ? const Icon(
-                                      Icons.person,
-                                      size: 70,
-                                      color: Colors.white24,
-                                    )
+                              child: (_profileImageUrl == null || _profileImageUrl!.isEmpty)
+                                  ? const Icon(Icons.person, color: Colors.white24, size: 70)
                                   : null,
                             ),
                           ),
@@ -798,16 +1154,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         'Rating',
                         _currentUser!.rating.toStringAsFixed(1),
                         Icons.star,
-                        Colors.amber,
+                        const Color(0xFFFFCC00),
+                        onTap: () {},
                       ),
                     ),
-                    const SizedBox(width: 16),
+                    const SizedBox(width: 12),
                     Expanded(
                       child: _buildStatCard(
-                        'Help Points',
-                        (_currentUser!.totalRatings * 10).toString(), // Simple gamification
-                        Icons.local_fire_department,
-                        Colors.orange,
+                        'Helper Points',
+                        _currentUser!.helperPoints.toString(),
+                        Icons.flash_on,
+                        const Color(0xFFF39C12),
+                        onTap: _showTransactionHistory,
                       ),
                     ),
                   ],
@@ -916,21 +1274,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _buildStatCard(String label, String value, IconData icon, Color color) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppTheme.secondaryBlack,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withValues(alpha: 0.2)),
-      ),
-      child: Column(
-        children: [
-          Icon(icon, color: color, size: 28),
-          const SizedBox(height: 8),
-          Text(value, style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
-          Text(label, style: const TextStyle(color: Colors.white38, fontSize: 12)),
-        ],
+  Widget _buildStatCard(String label, String value, IconData icon, Color color, {VoidCallback? onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppTheme.secondaryBlack,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: color.withValues(alpha: 0.2)),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: color, size: 28),
+            const SizedBox(height: 8),
+            Text(value, style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+            Text(label, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+          ],
+        ),
       ),
     );
   }

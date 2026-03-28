@@ -1,5 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import '../services/location_service.dart';
 import '../models/user_model.dart';
 import '../theme/app_theme.dart';
@@ -18,9 +20,11 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
   final List<String> _selectedSkills = [];
   double _searchRadius = 10.0;
   bool _isLoading = false;
+  bool _isMapView = false;
   String? _userLocation;
   double? _userLatitude;
   double? _userLongitude;
+  final MapController _mapController = MapController();
 
   final List<String> _availableSkills = [
     'Programming',
@@ -83,6 +87,10 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
           _nearbyHelpers = helpers.where((h) => h.uid != currentUserUid).toList();
           _isLoading = false;
         });
+
+        if (_isMapView && _userLatitude != null && _userLongitude != null) {
+          _mapController.move(LatLng(_userLatitude!, _userLongitude!), 13);
+        }
       } else {
         setState(() {
           _isLoading = false;
@@ -121,16 +129,16 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) {
           return AlertDialog(
-            title: const Text('Filter Helpers'),
+            backgroundColor: AppTheme.secondaryBlack,
+            title: const Text('Filter Helpers', style: TextStyle(color: Colors.white)),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Search Radius
-                  Text(
+                  const Text(
                     'Search Radius',
-                    style: Theme.of(context).textTheme.titleMedium,
+                    style: TextStyle(color: Colors.white70),
                   ),
                   const SizedBox(height: 8),
                   Slider(
@@ -138,6 +146,8 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
                     min: 1.0,
                     max: 50.0,
                     divisions: 49,
+                    activeColor: AppTheme.primaryPurple,
+                    inactiveColor: AppTheme.primaryPurple.withValues(alpha: 0.2),
                     label: '${_searchRadius.round()} km',
                     onChanged: (value) {
                       setDialogState(() => _searchRadius = value);
@@ -145,14 +155,12 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
                   ),
                   Text(
                     '${_searchRadius.round()} km',
-                    style: Theme.of(context).textTheme.bodySmall,
+                    style: const TextStyle(color: Colors.white54, fontSize: 12),
                   ),
                   const SizedBox(height: 16),
-
-                  // Skills Filter
-                  Text(
+                  const Text(
                     'Required Skills',
-                    style: Theme.of(context).textTheme.titleMedium,
+                    style: TextStyle(color: Colors.white70),
                   ),
                   const SizedBox(height: 8),
                   Wrap(
@@ -172,10 +180,11 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
                             }
                           });
                         },
-                        backgroundColor: AppTheme.veryLightPurple.withValues(alpha: 0.3),
+                        backgroundColor: AppTheme.primaryPurple.withValues(alpha: 0.1),
                         selectedColor: AppTheme.primaryPurple.withValues(alpha: 0.3),
+                        checkmarkColor: AppTheme.primaryPurple,
                         labelStyle: TextStyle(
-                          color: isSelected ? AppTheme.primaryPurple : AppTheme.darkPurple,
+                          color: isSelected ? AppTheme.primaryPurple : Colors.white70,
                         ),
                       );
                     }).toList(),
@@ -188,7 +197,7 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
                 onPressed: () => Navigator.of(context).pop(),
                 child: const Text('Cancel'),
               ),
-              TextButton(
+              ElevatedButton(
                 onPressed: () {
                   setState(() {});
                   Navigator.of(context).pop();
@@ -203,18 +212,158 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
     );
   }
 
+  Widget _buildMapView() {
+    if (_userLatitude == null || _userLongitude == null) {
+      return const Center(child: Text('Location not available', style: TextStyle(color: Colors.white54)));
+    }
+
+    return FlutterMap(
+      mapController: _mapController,
+      options: MapOptions(
+        initialCenter: LatLng(_userLatitude!, _userLongitude!),
+        initialZoom: 13,
+      ),
+      children: [
+        TileLayer(
+          urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+          userAgentPackageName: 'com.aidora.app',
+          subdomains: const ['a', 'b', 'c', 'd'],
+          retinaMode: RetinaMode.isHighDensity(context), // Enable sharp tiles
+        ),
+        CircleLayer(
+          circles: [
+            // Helpers Fuzzy Circles
+            ..._nearbyHelpers.map((helper) {
+              if (helper.latitude == null || helper.longitude == null) return null;
+              return CircleMarker(
+                point: LatLng(helper.latitude!, helper.longitude!),
+                radius: 400, // meters
+                useRadiusInMeter: true,
+                color: AppTheme.primaryPurple.withValues(alpha: 0.3),
+                borderColor: AppTheme.primaryPurple.withValues(alpha: 0.5),
+                borderStrokeWidth: 2,
+              );
+            }).whereType<CircleMarker>(),
+            
+            // Current User
+            CircleMarker(
+              point: LatLng(_userLatitude!, _userLongitude!),
+              radius: 100,
+              useRadiusInMeter: true,
+              color: Colors.blue.withValues(alpha: 0.3),
+              borderColor: Colors.blue,
+              borderStrokeWidth: 2,
+            ),
+          ],
+        ),
+        MarkerLayer(
+          markers: _nearbyHelpers.map((helper) {
+            if (helper.latitude == null || helper.longitude == null) return null;
+            return Marker(
+              point: LatLng(helper.latitude!, helper.longitude!),
+              width: 80,
+              height: 80,
+              child: GestureDetector(
+                onTap: () => _showHelperSimpleInfo(helper),
+                child: MouseRegion(cursor: SystemMouseCursors.click, child: Container()),
+              ),
+            );
+          }).whereType<Marker>().toList(),
+        ),
+      ],
+    );
+  }
+
+  void _showHelperSimpleInfo(UserModel helper) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.secondaryBlack,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 30,
+                  backgroundColor: AppTheme.primaryPurple.withValues(alpha: 0.1),
+                  child: Text(
+                    helper.name.isNotEmpty ? helper.name[0].toUpperCase() : '?',
+                    style: const TextStyle(color: AppTheme.primaryPurple, fontWeight: FontWeight.bold, fontSize: 20),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        helper.name,
+                        style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      Row(
+                        children: [
+                          const Icon(Icons.star, color: Colors.amber, size: 16),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${helper.rating.toStringAsFixed(1)} (${helper.totalRatings})',
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => CreateRequestScreen(
+                        preSelectedHelperId: helper.uid,
+                        preSelectedHelperName: helper.name,
+                      ),
+                    ),
+                  );
+                },
+                child: const Text('Request Help'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: AppTheme.primaryBlack,
       appBar: AppBar(
-        title: const Text('Nearby Helpers'),
+        title: const Text('Nearby Helpers', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
         actions: [
           IconButton(
-            icon: const Icon(Icons.filter_list),
+            icon: Icon(_isMapView ? Icons.list : Icons.map_outlined, color: Colors.white),
+            onPressed: () => setState(() => _isMapView = !_isMapView),
+            tooltip: _isMapView ? 'Show List' : 'Show Map',
+          ),
+          IconButton(
+            icon: const Icon(Icons.filter_list, color: Colors.white),
             onPressed: _showFilterDialog,
           ),
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh, color: Colors.white),
             onPressed: _loadNearbyHelpers,
           ),
         ],
@@ -222,12 +371,16 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
       body: Column(
         children: [
           // Location Info
-          if (_userLocation != null)
+          if (_userLocation != null && !_isMapView)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(16),
               margin: const EdgeInsets.all(16),
-              decoration: AppTheme.cardDecoration,
+              decoration: BoxDecoration(
+                color: AppTheme.secondaryBlack,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+              ),
               child: Row(
                 children: [
                   Icon(
@@ -241,11 +394,13 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
                       children: [
                         Text(
                           'Your Location',
-                          style: Theme.of(context).textTheme.bodySmall,
+                          style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
                         ),
                         Text(
                           _userLocation!,
-                          style: Theme.of(context).textTheme.bodyMedium,
+                          style: const TextStyle(color: Colors.white, fontSize: 14),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
@@ -262,28 +417,22 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
             ),
 
           // Selected Skills
-          if (_selectedSkills.isNotEmpty)
+          if (_selectedSkills.isNotEmpty && !_isMapView)
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              decoration: AppTheme.cardDecoration,
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    'Selected Skills',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
                     children: _selectedSkills.map((skill) {
                       return Chip(
-                        label: Text(skill),
+                        label: Text(skill, style: const TextStyle(fontSize: 12)),
                         backgroundColor: AppTheme.primaryPurple.withValues(alpha: 0.1),
                         labelStyle: const TextStyle(color: AppTheme.primaryPurple),
+                        deleteIcon: const Icon(Icons.close, size: 14),
                         onDeleted: () {
                           setState(() {
                             _selectedSkills.remove(skill);
@@ -297,34 +446,36 @@ class _NearbyHelpersScreenState extends State<NearbyHelpersScreen> {
               ),
             ),
 
-          // Helpers List
+          // Main View
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : _nearbyHelpers.isEmpty
-                    ? const Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.people_outline, size: 64, color: Colors.grey),
-                            SizedBox(height: 16),
-                            Text('No helpers found nearby'),
-                            Text('Try expanding your search radius'),
-                          ],
-                        ),
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.all(16),
-                        itemCount: _nearbyHelpers.length,
-                        itemBuilder: (context, index) {
-                          final helper = _nearbyHelpers[index];
-                          return HelperCard(
-                            helper: helper,
-                            userLatitude: _userLatitude!,
-                            userLongitude: _userLongitude!,
-                          );
-                        },
-                      ),
+                : _isMapView
+                    ? _buildMapView()
+                    : _nearbyHelpers.isEmpty
+                        ? const Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.people_outline, size: 64, color: Colors.grey),
+                                SizedBox(height: 16),
+                                Text('No helpers found nearby', style: TextStyle(color: Colors.white70)),
+                                Text('Try expanding your search radius', style: TextStyle(color: Colors.white54)),
+                              ],
+                            ),
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            itemCount: _nearbyHelpers.length,
+                            itemBuilder: (context, index) {
+                              final helper = _nearbyHelpers[index];
+                              return HelperCard(
+                                helper: helper,
+                                userLatitude: _userLatitude!,
+                                userLongitude: _userLongitude!,
+                              );
+                            },
+                          ),
           ),
         ],
       ),

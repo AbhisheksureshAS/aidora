@@ -34,6 +34,21 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
+    if (_currentIndex == 1) {
+      _updateLastViewedRequests();
+    }
+  }
+
+  Future<void> _updateLastViewedRequests() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .set({
+            'lastViewedRequests': DateTime.now().millisecondsSinceEpoch,
+          }, SetOptions(merge: true));
+    }
   }
 
   void _showLogoutDialog(BuildContext context) {
@@ -79,44 +94,168 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildBottomNavBar() {
-    return Container(
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: Color(0xFF1A1A1A), width: 0.5)),
-      ),
-      child: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (index) {
-          setState(() {
-            _currentIndex = index;
-          });
-        },
-        type: BottomNavigationBarType.fixed,
-        backgroundColor: const Color(0xFF0A0A0A),
-        selectedItemColor: const Color(0xFFFFFFFF),
-        unselectedItemColor: const Color(0xFFAAAAAA),
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.home_outlined),
-            activeIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.list_outlined),
-            activeIcon: Icon(Icons.list),
-            label: 'Requests',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.chat_outlined),
-            activeIcon: Icon(Icons.chat),
-            label: 'Chat',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.person_outlined),
-            activeIcon: Icon(Icons.person),
-            label: 'Profile',
-          ),
-        ],
-      ),
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return const SizedBox.shrink();
+
+    return StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseFirestore.instance.collection('users').doc(user.uid).snapshots(),
+      builder: (context, userSnap) {
+        final lastViewed = (userSnap.data?.data() as Map<String, dynamic>?)?['lastViewedRequests'] ?? 0;
+
+        return StreamBuilder<QuerySnapshot>(
+          stream: FirebaseFirestore.instance
+              .collection('help_requests')
+              .where('status', isEqualTo: 'pending')
+              .snapshots(),
+          builder: (context, requestSnap) {
+            // Filter locally for requests
+            final newRequests = requestSnap.hasData 
+                ? requestSnap.data!.docs.where((doc) {
+                    final data = doc.data() as Map<String, dynamic>;
+                    final createdAt = data['createdAt'] as int? ?? 0;
+                    final seekerId = data['seekerId'] as String? ?? '';
+                    return seekerId != user.uid && createdAt > lastViewed;
+                  }).toList()
+                : [];
+            
+            final hasNewRequests = newRequests.isNotEmpty;
+
+            return StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('chat_messages')
+                  .where('receiverId', isEqualTo: user.uid)
+                  .where('isRead', isEqualTo: false)
+                  .snapshots(),
+              builder: (context, chatSnap) {
+                final hasUnreadChat = chatSnap.hasData && chatSnap.data!.docs.isNotEmpty;
+
+                return Container(
+                  decoration: const BoxDecoration(
+                    border: Border(top: BorderSide(color: Color(0xFF1A1A1A), width: 0.5)),
+                  ),
+                  child: BottomNavigationBar(
+                    currentIndex: _currentIndex,
+                    onTap: (index) {
+                      if (index == 1) {
+                        _updateLastViewedRequests();
+                      }
+                      setState(() {
+                        _currentIndex = index;
+                      });
+                    },
+                    type: BottomNavigationBarType.fixed,
+                    backgroundColor: const Color(0xFF0A0A0A),
+                    selectedItemColor: const Color(0xFFFFFFFF),
+                    unselectedItemColor: const Color(0xFFAAAAAA),
+                    items: [
+                      const BottomNavigationBarItem(
+                        icon: Icon(Icons.home_outlined),
+                        activeIcon: Icon(Icons.home),
+                        label: 'Home',
+                      ),
+                      BottomNavigationBarItem(
+                        icon: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            const Icon(Icons.list_outlined),
+                            if (hasNewRequests)
+                              Positioned(
+                                right: -3,
+                                top: -1,
+                                child: Container(
+                                  decoration: const BoxDecoration(
+                                    color: Colors.redAccent,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  constraints: const BoxConstraints(
+                                    minWidth: 8,
+                                    minHeight: 8,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        activeIcon: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            const Icon(Icons.list),
+                            if (hasNewRequests)
+                              Positioned(
+                                right: -3,
+                                top: -1,
+                                child: Container(
+                                  decoration: const BoxDecoration(
+                                    color: Colors.redAccent,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  constraints: const BoxConstraints(
+                                    minWidth: 8,
+                                    minHeight: 8,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        label: 'Requests',
+                      ),
+                      BottomNavigationBarItem(
+                        icon: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            const Icon(Icons.chat_outlined),
+                            if (hasUnreadChat)
+                              Positioned(
+                                right: -3,
+                                top: -1,
+                                child: Container(
+                                  decoration: const BoxDecoration(
+                                    color: Colors.redAccent,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  constraints: const BoxConstraints(
+                                    minWidth: 8,
+                                    minHeight: 8,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        activeIcon: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            const Icon(Icons.chat),
+                            if (hasUnreadChat)
+                              Positioned(
+                                right: -3,
+                                top: -1,
+                                child: Container(
+                                  decoration: const BoxDecoration(
+                                    color: Colors.redAccent,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  constraints: const BoxConstraints(
+                                    minWidth: 8,
+                                    minHeight: 8,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        label: 'Chat',
+                      ),
+                      const BottomNavigationBarItem(
+                        icon: Icon(Icons.person_outlined),
+                        activeIcon: Icon(Icons.person),
+                        label: 'Profile',
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
     );
   }
 }
