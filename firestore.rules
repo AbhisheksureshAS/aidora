@@ -1,0 +1,125 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function requestPath(requestId) {
+      return /databases/$(database)/documents/help_requests/$(requestId);
+    }
+
+    function chatRoomPath(chatRoomId) {
+      return /databases/$(database)/documents/chat_rooms/$(chatRoomId);
+    }
+
+    function canReadChatRoom(chatRoomId) {
+      return signedIn() &&
+        exists(chatRoomPath(chatRoomId)) &&
+        request.auth.uid in get(chatRoomPath(chatRoomId)).data.participants;
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if isOwner(userId);
+      allow update, delete: if isOwner(userId);
+    }
+
+    match /help_requests/{requestId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.seekerId == request.auth.uid
+        && request.resource.data.status == 'pending';
+
+      allow update: if signedIn() && (
+        // Helper can accept only pending requests and cannot accept own request.
+        (
+          resource.data.status == 'pending' &&
+          request.resource.data.status == 'accepted' &&
+          request.resource.data.helperId == request.auth.uid &&
+          resource.data.seekerId != request.auth.uid
+        ) ||
+        // Seeker can mark accepted request as completed exactly once.
+        (
+          resource.data.seekerId == request.auth.uid &&
+          resource.data.status == 'accepted' &&
+          request.resource.data.status == 'completed' &&
+          request.resource.data.completedBy == request.auth.uid
+        ) ||
+        // Seeker can edit own pending request metadata.
+        (
+          resource.data.seekerId == request.auth.uid &&
+          resource.data.status == 'pending' &&
+          request.resource.data.status == 'pending'
+        )
+      );
+
+      allow delete: if signedIn() && resource.data.seekerId == request.auth.uid;
+    }
+
+    match /chat_rooms/{chatRoomId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.participants;
+      allow create: if signedIn()
+        && request.auth.uid in request.resource.data.participants
+        && request.resource.data.helpRequestId is string
+        && exists(requestPath(request.resource.data.helpRequestId));
+      allow update: if signedIn() && request.auth.uid in resource.data.participants;
+      allow delete: if false;
+    }
+
+    match /chat_messages/{messageId} {
+      allow read: if signedIn() && canReadChatRoom(resource.data.chatRoomId);
+      allow create: if signedIn()
+        && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.chatRoomId is string
+        && canReadChatRoom(request.resource.data.chatRoomId);
+
+      // Only receiver can toggle isRead to true.
+      allow update: if signedIn()
+        && canReadChatRoom(resource.data.chatRoomId)
+        && resource.data.receiverId == request.auth.uid
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['isRead'])
+        && request.resource.data.isRead == true;
+
+      allow delete: if false;
+    }
+
+    match /ratings/{ratingId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.isPublic == true ||
+          request.auth.uid == resource.data.fromUserId ||
+          request.auth.uid == resource.data.toUserId
+        );
+
+      // Enforce one rating per request per seeker:
+      // document id must be "<helpRequestId>_<fromUserId>"
+      allow create: if signedIn()
+        && request.resource.data.fromUserId == request.auth.uid
+        && request.resource.data.fromUserId != request.resource.data.toUserId
+        && ratingId == (request.resource.data.helpRequestId + "_" + request.auth.uid)
+        && exists(requestPath(request.resource.data.helpRequestId))
+        && get(requestPath(request.resource.data.helpRequestId)).data.seekerId == request.auth.uid
+        && get(requestPath(request.resource.data.helpRequestId)).data.helperId == request.resource.data.toUserId
+        && get(requestPath(request.resource.data.helpRequestId)).data.status == 'completed';
+
+      allow update, delete: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow create: if signedIn();
+      allow update: if signedIn() && resource.data.userId == request.auth.uid;
+      allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /user_reputation/{userId} {
+      allow read: if signedIn();
+      allow write: if signedIn();
+    }
+  }
+}
