@@ -183,9 +183,8 @@ class _RatingScreenState extends State<RatingScreen> {
         }
 
         if (ratingPoints != 0 && helperSnap != null && helperSnap.exists) {
-          final currentPoints = (helperSnap.data() as Map<String, dynamic>)['helperPoints'] ?? 0;
           tx.update(helperRef, {
-            'helperPoints': currentPoints + ratingPoints,
+            'helperPoints': FieldValue.increment(ratingPoints),
           });
 
           final transRef = _firestore.collection('pointTransactions').doc();

@@ -890,7 +890,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
               // Name Field
               if (_isEditing)
-                _buildEditableField(_nameController, 'Name', Icons.person)
+                Column(
+                  children: [
+                    _buildEditableField(_nameController, 'Name', Icons.person),
+                    _buildEditableField(_bioController, 'Bio', Icons.description, maxLines: 3),
+                  ],
+                )
               else
                 _buildInfoCard('Personal Info', [
                   _buildInfoRowItem('Name', _currentUser!.name, Icons.person),
@@ -1150,6 +1155,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 Row(
                   children: [
                     Expanded(
+                      child: FutureBuilder<QuerySnapshot>(
+                        future: _firestore
+                            .collection('help_requests')
+                            .where('helperId', isEqualTo: user.uid)
+                            .where('status', isEqualTo: 'completed')
+                            .get(),
+                        builder: (context, taskSnapshot) {
+                          final count = taskSnapshot.data?.docs.length ?? 0;
+                          return _buildStatCard(
+                            'Tasks',
+                            count.toString(),
+                            Icons.check_circle_outline,
+                            AppTheme.successColor,
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
                       child: _buildStatCard(
                         'Rating',
                         _currentUser!.rating.toStringAsFixed(1),
@@ -1161,7 +1185,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: _buildStatCard(
-                        'Helper Points',
+                        'Points',
                         _currentUser!.helperPoints.toString(),
                         Icons.flash_on,
                         const Color(0xFFF39C12),
@@ -1211,11 +1235,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
   );
 }
 
-  Widget _buildEditableField(TextEditingController controller, String label, IconData icon) {
+  Widget _buildEditableField(TextEditingController controller, String label, IconData icon, {int maxLines = 1}) {
     return Container(
       margin: const EdgeInsets.only(bottom: 20),
       child: TextField(
         controller: controller,
+        maxLines: maxLines,
         style: const TextStyle(color: Colors.white),
         decoration: InputDecoration(
           labelText: label,

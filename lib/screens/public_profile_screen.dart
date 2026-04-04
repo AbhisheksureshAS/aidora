@@ -156,8 +156,27 @@ class PublicProfileScreen extends StatelessWidget {
   Widget _buildStats(UserModel user) {
     return Row(
       children: [
+        Expanded(
+          child: FutureBuilder<QuerySnapshot>(
+            future: FirebaseFirestore.instance
+                .collection('help_requests')
+                .where('helperId', isEqualTo: user.uid)
+                .where('status', isEqualTo: 'completed')
+                .get(),
+            builder: (context, taskSnapshot) {
+              final count = taskSnapshot.data?.docs.length ?? 0;
+              return _buildStatItem(
+                'Tasks',
+                count.toString(),
+                Icons.check_circle_outline,
+                AppTheme.successColor,
+              );
+            },
+          ),
+        ),
+        const SizedBox(width: 8),
         Expanded(child: _buildStatItem('Rating', user.rating.toStringAsFixed(1), Icons.star, Colors.amber)),
-        const SizedBox(width: 12),
+        const SizedBox(width: 8),
         Expanded(child: _buildStatItem('Points', user.helperPoints.toString(), Icons.flash_on, Colors.orange)),
       ],
     );

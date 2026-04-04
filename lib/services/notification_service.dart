@@ -43,16 +43,22 @@ class NotificationService {
         request.requiredSkills,
       );
 
+      final locationInfo = (request.category == RequestCategory.emergency && request.locationName != null) 
+          ? '\n📍 ${request.locationName}' 
+          : '';
+
       for (final helperId in nearbyHelpers) {
         await createNotification(
           userId: helperId,
           title: 'New ${request.category.displayName} Request Nearby',
-          body: request.title,
+          body: '${request.title}$locationInfo',
           type: NotificationType.newRequest,
           data: {
             'requestId': request.id,
             'category': request.category.name,
             'urgency': request.urgency.name,
+            'latitude': request.latitude,
+            'longitude': request.longitude,
           },
           expiresAt: DateTime.now().add(const Duration(hours: 24)),
         );
@@ -147,19 +153,25 @@ class NotificationService {
         request.latitude!,
         request.longitude!,
         request.requiredSkills,
-        radiusKm: 20.0, // Larger radius for urgent requests
+        radiusKm: 15.0, // Targeted radius for urgent requests
       );
+
+      final locationInfo = request.locationName != null 
+          ? '\n📍 Location: ${request.locationName}' 
+          : '\n📍 Location sharing enabled';
 
       for (final helperId in nearbyHelpers) {
         await createNotification(
           userId: helperId,
           title: '🚨 Urgent Request Nearby',
-          body: request.title,
+          body: '${request.title}$locationInfo',
           type: NotificationType.urgentRequest,
           data: {
             'requestId': request.id,
             'category': request.category.name,
             'urgency': request.urgency.name,
+            'latitude': request.latitude,
+            'longitude': request.longitude,
           },
           expiresAt: DateTime.now().add(const Duration(hours: 2)), // Shorter expiry for urgent
         );

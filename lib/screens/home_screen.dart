@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -8,6 +9,7 @@ import 'nearby_helpers_screen.dart';
 import 'requests_screen.dart';
 import '../models/help_request_model.dart';
 import '../services/notification_service.dart';
+import '../services/location_service.dart';
 import '../theme/app_theme.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -270,68 +272,160 @@ class HomeTab extends StatefulWidget {
 class _HomeTabState extends State<HomeTab> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  Future<_UserInsights>? _insightsFuture;
-  String? _lastUserId;
+  final GlobalKey _nameKey = GlobalKey();
+  final List<Widget> _activeAnimations = [];
+  int _animationCounter = 0;
+
+  void _triggerFallingAvatar(String? imageUrl) {
+    if (imageUrl == null || imageUrl.isEmpty) return;
+
+    final RenderBox? renderBox = _nameKey.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox == null) return;
+
+    final offset = renderBox.localToGlobal(Offset.zero);
+    final size = renderBox.size;
+    final startX = offset.dx + size.width / 2;
+    final startY = offset.dy + size.height / 2;
+
+    final animationId = _animationCounter++;
+    
+    setState(() {
+      _activeAnimations.add(
+        _FallingAvatarAnimation(
+          key: ValueKey('falling_avatar_$animationId'),
+          imageUrl: imageUrl,
+          startX: startX,
+          startY: startY,
+          onComplete: () {
+            setState(() {
+              _activeAnimations.removeWhere((w) => w.key == ValueKey('falling_avatar_$animationId'));
+            });
+          },
+        ),
+      );
+    });
+  }
 
   @override
   void initState() {
     super.initState();
-    _initInsights();
   }
 
-  void _initInsights() {
-    final user = _auth.currentUser;
-    if (user != null && _lastUserId != user.uid) {
-      _lastUserId = user.uid;
-      _insightsFuture = _loadInsights(user.uid);
+  Stream<_UserInsights> _getInsightsStream(String userId) {
+    final s1 = _firestore.collection('help_requests').where('seekerId', isEqualTo: userId).snapshots();
+    final s2 = _firestore.collection('help_requests').where('helperId', isEqualTo: userId).snapshots();
+
+    final controller = StreamController<_UserInsights>();
+    QuerySnapshot? snap1;
+    QuerySnapshot? snap2;
+
+    void update() {
+      if (snap1 != null && snap2 != null) {
+        final seekerDocs = snap1!.docs;
+        final helperDocs = snap2!.docs;
+
+        final completedAsHelper = helperDocs.where((d) => 
+          (d.data() as Map<String, dynamic>)['status'] == RequestStatus.completed.name).length;
+        
+        final uniqueHelpers = seekerDocs
+            .map((d) => (d.data() as Map<String, dynamic>)['helperId'] as String?)
+            .where((id) => id != null && id.isNotEmpty)
+            .toSet()
+            .length;
+
+        if (!controller.isClosed) {
+          controller.add(_UserInsights(
+            totalHelpRequestsGiven: seekerDocs.length,
+            totalHelpRequestsTaken: completedAsHelper,
+            uniqueHelpersConnected: uniqueHelpers,
+          ));
+        }
+      }
     }
-  }
 
-  Future<_UserInsights> _loadInsights(String userId) async {
-    final completedAsSeeker = await _firestore
-        .collection('help_requests')
-        .where('seekerId', isEqualTo: userId)
-        .where('status', isEqualTo: RequestStatus.completed.name)
-        .get();
+    final sub1 = s1.listen((s) { snap1 = s; update(); });
+    final sub2 = s2.listen((s) { snap2 = s; update(); });
 
-    final connectedHelpers = await _firestore
-        .collection('help_requests')
-        .where('seekerId', isEqualTo: userId)
-        .where('status', isEqualTo: RequestStatus.completed.name)
-        .get();
+    controller.onCancel = () {
+      sub1.cancel();
+      sub2.cancel();
+      controller.close();
+    };
 
-    final uniqueHelpers = connectedHelpers.docs
-        .map((d) => (d.data()['helperId'] as String?) ?? '')
-        .where((id) => id.isNotEmpty)
-        .toSet()
-        .length;
-
-    final completedAsHelper = await _firestore
-        .collection('help_requests')
-        .where('helperId', isEqualTo: userId)
-        .where('status', isEqualTo: RequestStatus.completed.name)
-        .get();
-
-    final totalGiven = await _firestore
-        .collection('help_requests')
-        .where('seekerId', isEqualTo: userId)
-        .get();
-
-    final totalTaken = await _firestore
-        .collection('help_requests')
-        .where('helperId', isEqualTo: userId)
-        .get();
-
-    return _UserInsights(
-      totalHelpRequestsGiven: totalGiven.docs.length,
-      totalHelpRequestsTaken: totalTaken.docs.length,
-      uniqueHelpersConnected: uniqueHelpers,
-    );
+    return controller.stream;
   }
 
   void _showEmergencyDialog(BuildContext context) {
     final reasonController = TextEditingController();
     final descController = TextEditingController();
+    bool isSubmitting = false;
+
+    Future<void> submitEmergency(String reason, String description, setModalState) async {
+      setModalState(() => isSubmitting = true);
+      final parentMessenger = ScaffoldMessenger.of(this.context);
+      final user = _auth.currentUser;
+      if (user == null) {
+        setModalState(() => isSubmitting = false);
+        return;
+      }
+
+      try {
+        final locationResult = await LocationService.getCurrentLocation();
+        
+        final emergencyRequest = HelpRequestModel(
+          id: '',
+          seekerId: user.uid,
+          seekerName: user.displayName ?? user.email?.split('@').first ?? 'Anonymous',
+          seekerEmail: user.email ?? '',
+          title: '🚨 EMERGENCY: ${reason.isEmpty ? 'QUICK SOS' : reason}',
+          description: description.isEmpty ? 'Quick emergency request sent. Immediate help needed.' : description,
+          category: RequestCategory.emergency,
+          urgency: RequestUrgency.high,
+          status: RequestStatus.pending,
+          createdAt: DateTime.now(),
+          latitude: locationResult.lat,
+          longitude: locationResult.lng,
+          locationName: locationResult.address,
+          requiredSkills: [],
+        );
+
+        final docRef = await _firestore
+            .collection('help_requests')
+            .add(emergencyRequest.toFirebase());
+
+        final updatedRequest = emergencyRequest.copyWith(id: docRef.id);
+        await docRef.update({'id': docRef.id});
+
+        await NotificationService.notifyNewRequest(updatedRequest);
+        await NotificationService.notifyUrgentRequest(updatedRequest);
+
+        await _firestore.collection('emergency_notifications').add({
+          'requestId': docRef.id,
+          'requestTitle': updatedRequest.title,
+          'seekerId': user.uid,
+          'createdAt': DateTime.now().millisecondsSinceEpoch,
+          'isActive': true,
+          'latitude': locationResult.lat,
+          'longitude': locationResult.lng,
+        });
+
+        if (mounted) {
+          Navigator.of(context).pop();
+          parentMessenger.showSnackBar(
+            const SnackBar(
+              content: Text('Emergency request posted! Nearby helpers will be notified.'),
+              backgroundColor: AppTheme.emergencyRed,
+            ),
+          );
+        }
+      } catch (e) {
+        setModalState(() => isSubmitting = false);
+        if (!mounted) return;
+        ScaffoldMessenger.of(this.context).showSnackBar(
+          SnackBar(content: Text('Failed to post emergency: $e')),
+        );
+      }
+    }
 
     showModalBottomSheet(
       context: context,
@@ -341,111 +435,123 @@ class _HomeTabState extends State<HomeTab> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (context) {
-        return Padding(
-          padding: EdgeInsets.only(
-            left: 16,
-            right: 16,
-            top: 16,
-            bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Emergency Help',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: AppTheme.textPrimary),
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 16,
+                top: 16,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 16,
               ),
-              const SizedBox(height: 8),
-              const Text(
-                'Describe your emergency. We will post a high-priority request.',
-                style: TextStyle(color: AppTheme.textSecondary),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: reasonController,
-                decoration: const InputDecoration(
-                  labelText: 'Reason',
-                  hintText: 'Medical / safety / urgent need',
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: descController,
-                maxLines: 4,
-                decoration: const InputDecoration(
-                  labelText: 'Description',
-                  hintText: 'Give clear details so nearby helpers can respond fast.',
-                ),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () async {
-                    final parentMessenger = ScaffoldMessenger.of(this.context);
-                    final user = _auth.currentUser;
-                    if (user == null) return;
-
-                    try {
-                      final emergencyRequest = HelpRequestModel(
-                        id: '', // Will be set by Firestore
-                        seekerId: user.uid,
-                        seekerName: user.displayName ?? user.email?.split('@').first ?? 'Anonymous',
-                        seekerEmail: user.email ?? '',
-                        title: '🚨 EMERGENCY: ${reasonController.text.trim()}',
-                        description: descController.text.trim(),
-                        category: RequestCategory.emergency,
-                        urgency: RequestUrgency.high,
-                        status: RequestStatus.pending,
-                        createdAt: DateTime.now(),
-                        latitude: null, // Will be set by notification service
-                        longitude: null,
-                        requiredSkills: [],
-                      );
-
-                      final docRef = await _firestore
-                          .collection('help_requests')
-                          .add(emergencyRequest.toFirebase());
-
-                      // Update the request with the generated ID
-                      await docRef.update({'id': docRef.id});
-
-                      // Create emergency notification
-                      await _firestore.collection('emergency_notifications').add({
-                        'requestId': docRef.id,
-                        'requestTitle': emergencyRequest.title,
-                        'seekerId': user.uid,
-                        'createdAt': DateTime.now().millisecondsSinceEpoch,
-                        'isActive': true,
-                      });
-
-                      if (mounted) {
-                        Navigator.of(context).pop();
-                        parentMessenger.showSnackBar(
-                          const SnackBar(
-                            content: Text('Emergency request posted! Nearby helpers will be notified.'),
-                            backgroundColor: AppTheme.emergencyRed,
-                          ),
-                        );
-                      }
-                    } catch (e) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(this.context).showSnackBar(
-                        SnackBar(content: Text('Failed to post emergency request: $e')),
-                      );
-                    }
-                  },
-                  icon: const Icon(Icons.warning_amber_rounded),
-                  label: const Text('Submit Emergency Request'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.emergencyRed,
-                    foregroundColor: AppTheme.accentWhite,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Emergency Help',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: AppTheme.textPrimary),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close, color: Colors.white60),
+                      ),
+                    ],
                   ),
-                ),
+                  const SizedBox(height: 12),
+                  
+                  // NEW: Quick Emergency Button
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: AppTheme.emergencyRed.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: AppTheme.emergencyRed.withOpacity(0.3)),
+                    ),
+                    child: Column(
+                      children: [
+                        const Text(
+                          'QUICK SOS',
+                          style: TextStyle(color: AppTheme.emergencyRed, fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Immediate help without typing',
+                          style: TextStyle(color: Colors.white70, fontSize: 12),
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: isSubmitting ? null : () => submitEmergency('', '', setModalState),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.emergencyRed,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                            child: isSubmitting 
+                                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                                : const Text('SEND SOS NOW', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1.5)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  
+                  const SizedBox(height: 24),
+                  const Text(
+                    'Or describe your emergency:',
+                    style: TextStyle(color: AppTheme.textSecondary, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: reasonController,
+                    decoration: const InputDecoration(
+                      labelText: 'Reason',
+                      hintText: 'Medical / safety / urgent...',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: descController,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: 'Description',
+                      hintText: 'Details so helpers can respond quickly...',
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: isSubmitting ? null : () {
+                        if (reasonController.text.trim().isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Please enter a reason')),
+                          );
+                          return;
+                        }
+                        submitEmergency(reasonController.text.trim(), descController.text.trim(), setModalState);
+                      },
+                      icon: const Icon(Icons.warning_amber_rounded),
+                      label: Text(isSubmitting ? 'Posting...' : 'Post Detailed Emergency'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.emergencyRed,
+                        side: const BorderSide(color: AppTheme.emergencyRed),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            );
+          }
         );
       },
     );
@@ -469,206 +575,218 @@ class _HomeTabState extends State<HomeTab> {
               'there';
           final rating = ((userData?['rating'] as num?) ?? 0).toDouble();
           final totalRatings = (userData?['totalRatings'] as num?)?.toInt() ?? 0;
+          final profileImageUrl = (userData?['profileImageUrl'] as String?) ?? '';
 
-          _initInsights();
-
-          return FutureBuilder<_UserInsights>(
-            future: _insightsFuture,
-            builder: (context, insightsSnap) {
-              final insights = insightsSnap.data ?? const _UserInsights();
-
-              return Container(
+          return Stack(
+            children: [
+              Container(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.black,
-                      AppTheme.darkPurple.withValues(alpha: 0.6),
-                      AppTheme.primaryBlack,
-                    ],
-                    stops: const [0.0, 0.3, 0.5],
-                  ),
-                ),
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(20, 40, 20, 20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                    // Clean Premium Branded Header
-                    const SizedBox(height: 10),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Welcome to',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: AppTheme.textSecondary.withValues(alpha: 0.7),
-                                letterSpacing: 1.2,
-                                fontWeight: FontWeight.w400,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            RichText(
-                              text: TextSpan(
-                                style: const TextStyle(
-                                  fontSize: 42,
-                                  fontWeight: FontWeight.w900,
-                                  color: AppTheme.textPrimary,
-                                  letterSpacing: -0.5,
-                                  fontFamily: 'Outfit',
-                                ),
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.black,
+                          AppTheme.darkPurple.withValues(alpha: 0.6),
+                          AppTheme.primaryBlack,
+                        ],
+                        stops: const [0.0, 0.3, 0.5],
+                      ),
+                    ),
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(20, 40, 20, 20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Clean Premium Branded Header
+                          const SizedBox(height: 10),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const TextSpan(text: 'A'),
-                                  TextSpan(
-                                    text: 'i',
-                                    style: TextStyle(color: AppTheme.primaryPurple),
+                                  Text(
+                                    'Welcome to',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: AppTheme.textSecondary.withValues(alpha: 0.7),
+                                      letterSpacing: 1.2,
+                                      fontWeight: FontWeight.w400,
+                                    ),
                                   ),
-                                  const TextSpan(text: 'dora'),
+                                  const SizedBox(height: 4),
+                                  RichText(
+                                    text: TextSpan(
+                                      style: const TextStyle(
+                                        fontSize: 42,
+                                        fontWeight: FontWeight.w900,
+                                        color: AppTheme.textPrimary,
+                                        letterSpacing: -0.5,
+                                        fontFamily: 'Outfit',
+                                      ),
+                                      children: [
+                                        const TextSpan(text: 'A'),
+                                        TextSpan(
+                                          text: 'i',
+                                          style: TextStyle(color: AppTheme.primaryPurple),
+                                        ),
+                                        const TextSpan(text: 'dora'),
+                                      ],
+                                    ),
+                                  ),
                                 ],
                               ),
-                            ),
-                          ],
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: AppTheme.primaryPurple.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: AppTheme.primaryPurple.withValues(alpha: 0.2)),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.waving_hand_rounded, size: 14, color: AppTheme.accentPurple),
-                              const SizedBox(width: 8),
-                              Text(
-                                userName,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  color: AppTheme.textPrimary,
+                              GestureDetector(
+                                onTap: () => _triggerFallingAvatar(profileImageUrl),
+                                child: Container(
+                                  key: _nameKey,
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.primaryPurple.withValues(alpha: 0.1),
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: Border.all(color: AppTheme.primaryPurple.withValues(alpha: 0.2)),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.waving_hand_rounded, size: 14, color: AppTheme.accentPurple),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        userName,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w600,
+                                          color: AppTheme.textPrimary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ],
                           ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 40),
+                          const SizedBox(height: 40),
 
-                    // Categories Grid
-                    Text(
-                      'Categories',
-                      style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                        color: AppTheme.textPrimary,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildCategoriesGrid(context),
+                          // Categories Grid
+                          Text(
+                            'Categories',
+                            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                                  color: AppTheme.textPrimary,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 20,
+                                ),
+                          ),
+                          const SizedBox(height: 16),
+                          _buildCategoriesGrid(context),
 
-                    const SizedBox(height: 32),
+                          const SizedBox(height: 32),
 
-                    Text(
-                      'Quick Actions',
-                      style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                        color: AppTheme.textPrimary,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
+                          Text(
+                            'Quick Actions',
+                            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                                  color: AppTheme.textPrimary,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 20,
+                                ),
+                          ),
+                          const SizedBox(height: 16),
 
-                    // Main Action Cards
-                    ModernActionCard(
-                      title: 'Find Helpers',
-                      subtitle: 'Discover nearby helpers',
-                      icon: Icons.search_rounded,
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const NearbyHelpersScreen()),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    ModernActionCard(
-                      title: 'Create Request',
-                      subtitle: 'Post a generic help request',
-                      icon: Icons.add_circle_rounded,
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const CreateRequestScreen()),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    ModernActionCard(
-                      title: 'Emergency',
-                      subtitle: 'Get immediate help',
-                      icon: Icons.emergency_share_rounded,
-                      isEmergency: true,
-                      onTap: () => _showEmergencyDialog(context),
-                    ),
-
-                    const SizedBox(height: 40),
-
-                    // User Stats Section
-                    if (insights.totalHelpRequestsGiven > 0 || 
-                        insights.totalHelpRequestsTaken > 0) ...[
-                      Text(
-                        'Your Activity',
-                        style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                          color: AppTheme.textPrimary,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 20,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildStatCard(
-                              'Tasks Posted',
-                              insights.totalHelpRequestsGiven.toString(),
-                              Icons.post_add,
+                          // Main Action Cards
+                          ModernActionCard(
+                            title: 'Find Helpers',
+                            subtitle: 'Discover nearby helpers',
+                            icon: Icons.search_rounded,
+                            onTap: () => Navigator.of(context).push(
+                              MaterialPageRoute(builder: (_) => const NearbyHelpersScreen()),
                             ),
                           ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: _buildStatCard(
-                              'Tasks Completed',
-                              insights.totalHelpRequestsTaken.toString(),
-                              Icons.task_alt,
+                          const SizedBox(height: 12),
+                          ModernActionCard(
+                            title: 'Create Request',
+                            subtitle: 'Post a generic help request',
+                            icon: Icons.add_circle_rounded,
+                            onTap: () => Navigator.of(context).push(
+                              MaterialPageRoute(builder: (_) => const CreateRequestScreen()),
                             ),
+                          ),
+                          const SizedBox(height: 12),
+                          ModernActionCard(
+                            title: 'Emergency',
+                            subtitle: 'Get immediate help',
+                            icon: Icons.emergency_share_rounded,
+                            isEmergency: true,
+                            onTap: () => _showEmergencyDialog(context),
+                          ),
+
+
+                          const SizedBox(height: 40),
+
+                          // User Stats Section
+                          StreamBuilder<_UserInsights>(
+                            stream: _getInsightsStream(currentUser.uid),
+                            builder: (context, insightsSnap) {
+                              final insights = insightsSnap.data ?? const _UserInsights();
+                              
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Your Activity',
+                                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                                          color: AppTheme.textPrimary,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 20,
+                                        ),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: _buildStatCard(
+                                          'Tasks Posted',
+                                          insights.totalHelpRequestsGiven.toString(),
+                                          Icons.post_add,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 16),
+                                      Expanded(
+                                        child: _buildStatCard(
+                                          'Tasks Completed',
+                                          insights.totalHelpRequestsTaken.toString(),
+                                          Icons.task_alt,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: _buildStatCard(
+                                          'Helpers Connected',
+                                          insights.uniqueHelpersConnected.toString(),
+                                          Icons.people,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 16),
+                                      Expanded(
+                                        child: _buildRatingCard(rating, totalRatings),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              );
+                            },
                           ),
                         ],
                       ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildStatCard(
-                              'Helpers Connected',
-                              insights.uniqueHelpersConnected.toString(),
-                              Icons.people,
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: _buildRatingCard(rating, totalRatings),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ],
-                ),
-              ),);
+                    ),
+                  ),
+                  ..._activeAnimations,
+                ],
+              );
             },
-          );
-        },
-      ),
-    );
+          ),
+        );
   }
 
   Widget _buildCategoriesGrid(BuildContext context) {
@@ -964,5 +1082,112 @@ class ProfileTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const ProfileScreen();
+  }
+}
+
+class _FallingAvatarAnimation extends StatefulWidget {
+  final String imageUrl;
+  final double startX;
+  final double startY;
+  final VoidCallback onComplete;
+
+  const _FallingAvatarAnimation({
+    super.key,
+    required this.imageUrl,
+    required this.startX,
+    required this.startY,
+    required this.onComplete,
+  });
+
+  @override
+  State<_FallingAvatarAnimation> createState() => _FallingAvatarAnimationState();
+}
+
+class _FallingAvatarAnimationState extends State<_FallingAvatarAnimation>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _yAnimation;
+  late Animation<double> _opacityAnimation;
+  late Animation<double> _rotationAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    );
+
+    _yAnimation = Tween<double>(
+      begin: widget.startY,
+      end: 1000.0, // Fall below screen
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeInBack,
+    ));
+
+    _opacityAnimation = Tween<double>(
+      begin: 1.0,
+      end: 0.0,
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: const Interval(0.6, 1.0, curve: Curves.easeIn),
+    ));
+
+    _rotationAnimation = Tween<double>(
+      begin: 0.0,
+      end: 0.5, // Slight rotation while falling
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: Curves.linear,
+    ));
+
+    _controller.forward().then((_) => widget.onComplete());
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Positioned(
+          left: widget.startX - 20,
+          top: _yAnimation.value,
+          child: Opacity(
+            opacity: _opacityAnimation.value,
+            child: Transform.rotate(
+              angle: _rotationAnimation.value,
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.3),
+                      blurRadius: 10,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: CircleAvatar(
+                  radius: 20,
+                  backgroundImage: widget.imageUrl.startsWith('http')
+                      ? NetworkImage(widget.imageUrl) as ImageProvider
+                      : AssetImage(widget.imageUrl),
+                  backgroundColor: AppTheme.secondaryBlack,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 }

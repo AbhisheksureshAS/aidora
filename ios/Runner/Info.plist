@@ -47,5 +47,13 @@
 		<true/>
 		<key>UIStatusBarHidden</key>
 		<false/>
+		<key>LSApplicationQueriesSchemes</key>
+		<array>
+			<string>https</string>
+			<string>http</string>
+			<string>geo</string>
+			<string>comgooglemaps</string>
+			<string>iosamap</string>
+		</array>
 	</dict>
 </plist>

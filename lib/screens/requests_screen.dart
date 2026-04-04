@@ -6,6 +6,7 @@ import '../models/notification_model.dart';
 import 'rating_screen.dart';
 import '../services/notification_service.dart';
 import '../theme/app_theme.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class RequestsTab extends StatefulWidget {
   const RequestsTab({super.key});
@@ -461,17 +462,64 @@ class _RequestsTabState extends State<RequestsTab> {
               const SizedBox(height: 16),
               
               // Location
-              Text(
-                'Location',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Location',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (request.latitude != null && request.longitude != null && request.category == RequestCategory.emergency)
+                    TextButton.icon(
+                      onPressed: () async {
+                        final lat = request.latitude;
+                        final lng = request.longitude;
+                        final googleMapsUrl = 'https://www.google.com/maps/search/?api=1&query=$lat,$lng';
+                        final appleMapsUrl = 'https://maps.apple.com/?q=$lat,$lng';
+                        final uri = Uri.parse(googleMapsUrl);
+                        final appleUri = Uri.parse(appleMapsUrl);
+                        
+                        try {
+                          if (await canLaunchUrl(uri)) {
+                            await launchUrl(uri, mode: LaunchMode.externalNonBrowserApplication);
+                          } else if (await canLaunchUrl(appleUri)) {
+                            await launchUrl(appleUri, mode: LaunchMode.externalNonBrowserApplication);
+                          } else {
+                            await launchUrl(uri, mode: LaunchMode.platformDefault);
+                          }
+                        } catch (e) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Could not open maps')),
+                            );
+                          }
+                        }
+                      },
+                      icon: const Icon(Icons.map_outlined, size: 16),
+                      label: const Text('Open Map', style: TextStyle(fontSize: 12)),
+                    ),
+                ],
               ),
               const SizedBox(height: 8),
-              Text(
-                request.locationName ?? 'Location not specified',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white70),
-              ),
+              if (request.category == RequestCategory.emergency)
+                Text(
+                  request.locationName ?? 'Location not specified',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white70),
+                )
+              else
+                const Text(
+                  'Address hidden for privacy',
+                  style: TextStyle(color: Colors.white38, fontSize: 13, fontStyle: FontStyle.italic),
+                ),
+              if (request.latitude != null && request.longitude != null && request.category == RequestCategory.emergency) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '${request.latitude!.toStringAsFixed(6)}, ${request.longitude!.toStringAsFixed(6)}',
+                  style: const TextStyle(color: Colors.white38, fontSize: 10, fontFamily: 'monospace'),
+                ),
+              ],
               const SizedBox(height: 16),
               
               // Offered Amount
@@ -677,7 +725,6 @@ class _RequestsTabState extends State<RequestsTab> {
 
       await _firestore.runTransaction((tx) async {
         final reqSnap = await tx.get(requestRef);
-        final helperRef = _firestore.collection('users').doc(user.uid);
 
         if (!reqSnap.exists) {
           throw Exception('Request not found.');
@@ -693,11 +740,7 @@ class _RequestsTabState extends State<RequestsTab> {
         if (request.urgency == RequestUrgency.high) baseTaskPoints = 20;
         else if (request.urgency == RequestUrgency.medium) baseTaskPoints = 10;
 
-        // Fetch helper snap for immediate points
-        final helperSnap = await tx.get(helperRef);
-        final currentPoints = (helperSnap.data() as Map<String, dynamic>)['helperPoints'] ?? 0;
-
-        // Update Request - Store speed bonus to be awarded ON COMPLETION
+        // Update Request - Store points to be awarded ON COMPLETION
         tx.update(requestRef, {
           'status': RequestStatus.accepted.name,
           'helperId': user.uid,
@@ -707,22 +750,7 @@ class _RequestsTabState extends State<RequestsTab> {
           'updatedAt': nowMs,
           'pendingSpeedBonus': speedBonus,
           'speedBonusReason': speedReason,
-          'basePointsAwarded': baseTaskPoints, // Track that base points were given
-        });
-
-        // Award base points immediately
-        tx.update(helperRef, {
-          'helperPoints': currentPoints + baseTaskPoints,
-          'updatedAt': nowMs,
-        });
-
-        // Record Transaction for base points
-        final transRef = _firestore.collection('pointTransactions').doc();
-        tx.set(transRef, {
-          'uid': user.uid,
-          'points': baseTaskPoints,
-          'reason': "Task Accepted Reward (${request.urgency.displayName}): ${request.title}",
-          'timestamp': FieldValue.serverTimestamp(),
+          'basePointsAwarded': baseTaskPoints, // Track points to be given on completion
         });
 
         tx.set(chatRoomRef, {
@@ -744,6 +772,8 @@ class _RequestsTabState extends State<RequestsTab> {
           'updatedAt': nowMs,
         }, SetOptions(merge: true));
 
+        // 1. First System Message
+        final firstMessageRef = _firestore.collection('chat_messages').doc();
         tx.set(firstMessageRef, {
           'senderId': user.uid,
           'senderName': helperData['name'] ?? user.email!.split('@')[0],
@@ -751,12 +781,39 @@ class _RequestsTabState extends State<RequestsTab> {
           'receiverName': request.seekerName,
           'content': 'Request accepted. You can now chat.',
           'type': 'system',
-          'timestamp': nowMs,
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
           'isRead': false,
           'chatRoomId': request.id,
           'helpRequestId': request.id,
           'createdAt': nowMs,
         });
+
+        // 2. Emergency Location Message (if applicable)
+        if (request.category == RequestCategory.emergency && 
+            request.latitude != null && request.longitude != null) {
+          final locationMessageRef = _firestore.collection('chat_messages').doc();
+          final googleMapsUrl = 'https://www.google.com/maps/search/?api=1&query=${request.latitude},${request.longitude}';
+          
+          tx.set(locationMessageRef, {
+            'senderId': request.seekerId,
+            'senderName': request.seekerName,
+            'receiverId': user.uid,
+            'receiverName': helperData['name'] ?? user.email!.split('@')[0],
+            'content': '📍 EMERGENCY LOCATION:\n${request.locationName ?? 'Coordinates: ${request.latitude},${request.longitude}'}\n\n$googleMapsUrl',
+            'type': 'location',
+            'timestamp': DateTime.now().millisecondsSinceEpoch + 100, // Ensure it appears after
+            'isRead': false,
+            'chatRoomId': request.id,
+            'helpRequestId': request.id,
+            'createdAt': nowMs,
+          });
+          
+          // Update chat room last message
+          tx.update(chatRoomRef, {
+            'lastMessage': '📍 Emergency Location Shared',
+            'lastMessageTime': DateTime.now().millisecondsSinceEpoch + 100,
+          });
+        }
       });
 
       await NotificationService.createNotification(
@@ -833,34 +890,48 @@ class _RequestsTabState extends State<RequestsTab> {
           'updatedAt': nowMs,
         });
 
+        final int speedBonus = data['pendingSpeedBonus'] ?? 0;
+        final String speedReason = data['speedBonusReason'] ?? "";
+        final int basePoints = data['basePointsAwarded'] ?? 0;
+        final int completionBonus = 5;
+        final int totalAwarded = basePoints + speedBonus + completionBonus;
+
         if (helperSnap != null && helperSnap.exists) {
-          final currentPoints = (helperSnap.data() as Map<String, dynamic>)['helperPoints'] ?? 0;
           final helperRef = _firestore.collection('users').doc(data['helperId']);
           
-          final int speedBonus = data['pendingSpeedBonus'] ?? 0;
-          final String speedReason = data['speedBonusReason'] ?? "";
-          
-          if (speedBonus > 0) {
+          if (totalAwarded > 0) {
             tx.update(helperRef, {
               'completedTasks': FieldValue.increment(1),
-              'helperPoints': currentPoints + speedBonus,
+              'helperPoints': FieldValue.increment(totalAwarded),
               'updatedAt': nowMs,
             });
 
-            // Record Transaction for the bonus
+            // Record Transaction
             final transRef = _firestore.collection('pointTransactions').doc();
+            String reason = "Task Completed Reward: ${data['title'] ?? 'Task'} (+5 PTS completion bonus";
+            if (basePoints > 0) reason += ", $basePoints PTS urgency reward";
+            if (speedBonus > 0) {
+              reason += ", $speedBonus PTS speed bonus$speedReason";
+            }
+            reason += ")";
+            
             tx.set(transRef, {
               'uid': data['helperId'],
-              'points': speedBonus,
-              'reason': "Speed Bonus Earned: ${data['title'] ?? 'Task'}$speedReason",
+              'points': totalAwarded,
+              'reason': reason,
               'timestamp': FieldValue.serverTimestamp(),
             });
-          } else {
-            // Still increment completed tasks even if no bonus
-            tx.update(helperRef, {
-              'completedTasks': FieldValue.increment(1),
-              'updatedAt': nowMs,
-            });
+          }
+
+          // Notify helper of points earned
+          if (totalAwarded > 0) {
+            NotificationService.createNotification(
+              userId: data['helperId'],
+              title: 'Points Earned!',
+              body: 'You earned $totalAwarded PTS for completing "${data['title'] ?? 'Task'}"',
+              type: NotificationType.system,
+              data: {'requestId': request.id, 'points': totalAwarded},
+            );
           }
         }
 
@@ -877,7 +948,7 @@ class _RequestsTabState extends State<RequestsTab> {
           'senderName': data['seekerName'] ?? 'Seeker',
           'receiverId': data['helperId'] ?? '',
           'receiverName': data['helperName'] ?? 'Helper',
-          'content': 'Task marked as completed',
+          'content': 'Task marked as completed. Helper earned $totalAwarded PTS! (+5 bonus included)',
           'type': 'system',
           'timestamp': nowMs,
           'isRead': false,
@@ -923,10 +994,17 @@ class _RequestsTabState extends State<RequestsTab> {
         decoration: BoxDecoration(
           color: AppTheme.secondaryBlack,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+          border: Border.all(
+            color: request.category == RequestCategory.emergency 
+                ? AppTheme.emergencyRed.withOpacity(0.5) 
+                : Colors.white.withValues(alpha: 0.1),
+            width: request.category == RequestCategory.emergency ? 2 : 1,
+          ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.2),
+              color: request.category == RequestCategory.emergency 
+                  ? AppTheme.emergencyRed.withValues(alpha: 0.1) 
+                  : Colors.black.withValues(alpha: 0.2),
               blurRadius: 10,
               offset: const Offset(0, 4),
             ),

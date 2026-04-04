@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/chat_model.dart';
 import '../theme/app_theme.dart';
 import 'public_profile_screen.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -55,6 +56,12 @@ class _ChatScreenState extends State<ChatScreen> {
               IconButton(
                 icon: const Icon(Icons.info_outline, color: Colors.white),
                 onPressed: _showChatInfo,
+              )
+            else if (user != null)
+              IconButton(
+                icon: const Icon(Icons.delete_sweep_outlined, color: Colors.white),
+                tooltip: 'Clear all chats',
+                onPressed: _confirmDeleteAllChats,
               ),
           ],
         ),
@@ -656,6 +663,115 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _confirmDeleteAllChats() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppTheme.cardColor,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Clear All Chats?', style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.bold)),
+        content: const Text(
+          'This will permanently delete all your conversations and messages. This action cannot be undone.',
+          style: TextStyle(color: AppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel', style: TextStyle(color: AppTheme.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _deleteAllChats();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.errorColor,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Clear All'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteAllChats() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    // Show loading indicator
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      // 1. Get all chat rooms where user is a participant
+      final chatRoomsSnap = await _firestore
+          .collection('chat_rooms')
+          .where('participants', arrayContains: user.uid)
+          .get();
+
+      if (chatRoomsSnap.docs.isEmpty) {
+        if (mounted) Navigator.pop(context); // Remove progress indicator
+        return;
+      }
+
+      final batch = _firestore.batch();
+      final List<String> roomIds = [];
+
+      for (var doc in chatRoomsSnap.docs) {
+        roomIds.add(doc.id);
+        batch.delete(doc.reference);
+      }
+
+      // 2. Get all messages for these chat rooms
+      // Note: Firestore 'where in' has a limit of 10, but we can do chunks or just query by room for simplicity
+      // For now, let's delete room by room to handle messages properly if there are many rooms
+      
+      // Commit room deletions first
+      await batch.commit();
+
+      // 3. Delete messages for each room
+      for (var roomId in roomIds) {
+        final messagesSnap = await _firestore
+            .collection('chat_messages')
+            .where('chatRoomId', isEqualTo: roomId)
+            .get();
+            
+        if (messagesSnap.docs.isNotEmpty) {
+          final msgBatch = _firestore.batch();
+          for (var msgDoc in messagesSnap.docs) {
+            msgBatch.delete(msgDoc.reference);
+          }
+          await msgBatch.commit();
+        }
+      }
+
+      if (mounted) {
+        Navigator.pop(context); // Remove progress indicator
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('All chats have been cleared'),
+            backgroundColor: AppTheme.successColor,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context); // Remove progress indicator
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error clearing chats: $e'),
+            backgroundColor: AppTheme.errorColor,
+          ),
+        );
+      }
+    }
+  }
+
   void _showChatInfo() async {
     if (_selectedChatRoom == null) return;
 
@@ -1129,15 +1245,28 @@ class MessageBubble extends StatelessWidget {
                       top: isMe ? 10 : 6,
                       bottom: 6,
                     ),
-                    child: Text(
-                      message.content,
-                      style: const TextStyle(
-                        color: AppTheme.textPrimary,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w400,
-                        height: 1.3,
-                      ),
-                    ),
+                    child: message.type == MessageType.location 
+                      ? _buildLocationCard(context, message.content)
+                      : message.type == MessageType.system
+                        ? Center(
+                            child: Text(
+                              message.content,
+                              style: const TextStyle(
+                                fontStyle: FontStyle.italic,
+                                fontSize: 13,
+                                color: AppTheme.textSecondary,
+                              ),
+                            ),
+                          )
+                        : Text(
+                            message.content,
+                            style: const TextStyle(
+                              color: AppTheme.textPrimary,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w400,
+                              height: 1.3,
+                            ),
+                          ),
                   ),
                   
                   // Time and read status
@@ -1172,6 +1301,96 @@ class MessageBubble extends StatelessWidget {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocationCard(BuildContext context, String content) {
+    final parts = content.split('\n\n');
+    final description = parts.isNotEmpty ? parts[0] : content;
+    final url = parts.length > 1 ? parts[1].trim() : '';
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      decoration: BoxDecoration(
+        color: AppTheme.emergencyRed.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.emergencyRed.withOpacity(0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.emergency_share_rounded, color: AppTheme.emergencyRed, size: 18),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'Emergency Location',
+                      style: TextStyle(
+                        color: AppTheme.emergencyRed,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  description,
+                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                ),
+              ],
+            ),
+          ),
+          if (url.isNotEmpty)
+            InkWell(
+              onTap: () async {
+                final uri = Uri.parse(url);
+                try {
+                  if (await canLaunchUrl(uri)) {
+                    await launchUrl(uri, mode: LaunchMode.externalNonBrowserApplication);
+                  } else {
+                    // Fallback to launching in browser if app isn't found
+                    await launchUrl(uri, mode: LaunchMode.platformDefault);
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Could not open Google Maps')),
+                    );
+                  }
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                decoration: BoxDecoration(
+                  color: AppTheme.emergencyRed.withOpacity(0.2),
+                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(11)),
+                ),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.map_outlined, color: Colors.white, size: 16),
+                    const SizedBox(width: 6),
+                    Text(
+                      'OPEN GOOGLE MAPS',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );
